@@ -10,6 +10,7 @@ The 0.3.0 live month beat the baseline on cost but not the rule-based controller
 - Prompt version 3 (default): the peak block, the signal and its outlook, each building's draw before storage, hours left in the month, a strategy in priority order (comfort, peak cap, then cost and carbon, with charging spread over several low hours) and a 150 character target for reasons. Versions 1 and 2 are unchanged for replay; `--prompt-version` selects them.
 - Rule-based controller for version 3 with the same signal and limiter, retuned on the first week only; the 0.3.0 settings are kept as `RuleParamsV2`.
 - `scripts/tune_rules.py` searches the policy and the limiter's settings together, in parallel, and requires both peaks at or below the baseline's on the tuning week.
+- Viewer footer: the version now comes from `docs/assets/version.js` (refresh with `python -m hyperbolic.viewer --write-version`), which a test keeps equal to the package version; it read a hard-coded 0.2.0 before. Adds a "Built by Addison Smith · GitHub · Sixophor" credit line.
 - Tests: the limiter (randomized never-above-target, clamps, battery before tank, legacy runs, a CityLearn run with trims that replays identically), the combined signal, the peak tracker, prompt version 3, the reason length guard, and a full-month rule-based dry run.
 
 Full month against the committed baseline:

@@ -354,7 +354,12 @@ section { margin-top: 28px; }
   color: var(--text-secondary); font-size: 14px;
 }
 .note strong { color: var(--text-primary); }
-footer { margin: 36px 0 48px; color: var(--text-muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+footer { margin: 36px 0 48px; color: var(--text-muted); font-size: 12.5px; display: flex; flex-direction: column; gap: 10px; }
+footer .footer-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; overflow-wrap: anywhere; }
+footer .credit { margin: 0; line-height: 1.6; }
+footer .credit a { color: var(--text-secondary); text-decoration-color: var(--hairline-strong); }
+footer .credit a:hover { color: var(--text-primary); text-decoration-color: var(--agent); }
+footer .credit .sep { color: var(--text-muted); margin: 0 2px; }
 .empty { padding: 28px 18px; text-align: center; color: var(--text-secondary); }
 
 /* Responsive ---------------------------------------------------------------- */

@@ -129,3 +129,29 @@ def test_committed_baseline_pairs_with_a_new_agent_run(tmp_path, fixture_runs):
     results = P(__file__).parents[1] / "results"
     pair = find_latest_pair(runs, (results,))
     assert pair == (results / "baseline", runs / "agent")
+
+
+def test_viewer_version_follows_the_package():
+    """The footer used to hard-code 0.2.0; it now reads assets/version.js, which must match."""
+    import re
+
+    import hyperbolic
+    from hyperbolic.viewer import version_js
+
+    docs = Path(__file__).parents[1] / "docs"
+    js = (docs / "assets" / "version.js").read_text(encoding="utf-8")
+    assert js == version_js(hyperbolic.__version__)
+    html = (docs / "index.html").read_text(encoding="utf-8")
+    assert '<script src="assets/version.js"></script>' in html
+    assert html.index("assets/version.js") < html.index("assets/app.js")
+    # No release number is written into the page itself.
+    assert not re.search(r"Hyperbolic \d+\.\d+\.\d+", html)
+    assert "HYPERBOLIC_VERSION" in (docs / "assets" / "app.js").read_text(encoding="utf-8")
+
+
+def test_viewer_footer_credit():
+    html = (Path(__file__).parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    for href, text in (("https://addisontech.github.io", "Addison Smith"),
+                       ("https://github.com/AddisonTech/Hyperbolic", "GitHub"), ("https://sixophor.com", "Sixophor")):
+        assert f'<a href="{href}">{text}</a>' in html
+    assert "Built by" in html
