@@ -77,6 +77,37 @@ def test_find_latest_pair_prefers_live_agent(tmp_path, fixture_runs):
     assert find_latest_pair(runs) == (runs / "b", live)
 
 
+def _as_live(agent, dest):
+    import shutil
+
+    shutil.copytree(agent, dest)
+    m = json.loads((dest / "manifest.json").read_text())
+    m["supervisor"]["kind"] = "live"
+    (dest / "manifest.json").write_text(json.dumps(m))
+    return dest
+
+
+def test_live_run_is_not_labeled_a_sample(tmp_path, fixture_runs):
+    base, agent = fixture_runs
+    live = build_viewer_data((base, _as_live(agent, tmp_path / "live")))
+    assert live["sample"] is False
+    assert live["scenarios"][0]["agent_sample"] is False
+    assert live["scenarios"][0]["agent_run"]["supervisor"] == "live"
+    scripted = build_viewer_data((base, agent))
+    assert scripted["sample"] is True
+    assert scripted["scenarios"][0]["agent_sample"] is True
+
+
+def test_hidden_attribute_beats_component_display():
+    """The sample banner is display: flex; without this rule setting hidden on it does nothing."""
+    import re
+
+    css = (Path(__file__).parents[1] / "docs" / "assets" / "style.css").read_text(encoding="utf-8")
+    assert re.search(r"\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}", css)
+    html = (Path(__file__).parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    assert 'id="sample-banner" hidden' in html  # hidden until the data says it is a sample
+
+
 def test_headline_is_plain_about_losses():
     base = {"cost_total": 1.0, "carbon_emissions_total": 1.0, "discomfort_proportion": 0.17}
     win = headline(base, {"cost_total": 0.9, "carbon_emissions_total": 0.95, "discomfort_proportion": 0.16})

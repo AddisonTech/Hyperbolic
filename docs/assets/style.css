@@ -79,6 +79,8 @@ a { color: var(--text-primary); text-underline-offset: 3px; text-decoration-colo
 a:hover { text-decoration-color: var(--agent); }
 code, pre { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace; }
 .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+/* The hidden attribute must win over component display rules such as .sample-banner's flex. */
+[hidden] { display: none !important; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .wrap { max-width: 1160px; margin: 0 auto; padding: 0 var(--gutter); }
