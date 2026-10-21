@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Hyperbolic run folders (replayable records of each run)
+/runs/
+/runs-mock/
