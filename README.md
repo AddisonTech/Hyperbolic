@@ -1,5 +1,7 @@
 # Hyperbolic
 
+**A month of building ops in an hour.**
+
 An AI supervisor that runs a simulated district and tries to beat the no-control reference on cost, emissions and comfort.
 
 Hyperbolic runs [CityLearn](https://github.com/citylearn-project/CityLearn), an open source district energy simulator, entirely on one machine. Every simulated hour it reads CityLearn's observations, forecasts and prices for all buildings, asks a language model for one action per device, passes the answer through a deterministic safety envelope, and applies what survives. Both the agent and the reference are scored by CityLearn's own KPI evaluation, so the numbers come from the benchmark, not from this project.
