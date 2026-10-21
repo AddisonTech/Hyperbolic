@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Hyperbolic Replay</title>
-  <meta name="description" content="Stock control versus a supervisory agent on the BOPTEST multizone office test case, replayed hour by hour from saved run files.">
+  <meta name="description" content="CityLearn's no-control reference versus a supervisory agent on the 2023 challenge district, replayed hour by hour from saved run files.">
   <meta name="theme-color" content="#0d0f12">
   <script>
     try { var t = localStorage.getItem("hyperbolic-theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
@@ -22,7 +22,7 @@
         <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--agent)"/><path d="M8 7c3 6 3 12 0 18M24 7c-3 6-3 12 0 18" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round"/></svg>
         <span>Hyperbolic</span>
       </div>
-      <nav class="scenario-tabs" id="scenario-tabs" role="tablist" aria-label="Scenario"></nav>
+      <div class="dataset-pill" id="dataset-pill">CityLearn 2023</div>
       <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch to light theme">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path id="theme-icon" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       </button>
@@ -31,45 +31,40 @@
 
   <main class="wrap" id="main">
     <div class="sample-banner" id="sample-banner" hidden>
-      <span class="tag sample">Sample</span>
-      <div><strong>This is sample data, not a BOPTEST result.</strong> <span class="long">It was built from a recorded mock run: an offline thermal model of the same floor plan, driven by the test case's own Chicago weather, price and occupancy data, with scripted replies standing in for the model. It exists to show how the replay works.</span><span class="short">Built from a recorded mock run with scripted replies.</span> <a href="#howto">Replace it with real runs</a>.</div>
+      <span class="tag sample">Sample agent</span>
+      <div><strong>The baseline is a real CityLearn run. The agent side is a sample.</strong> <span class="long">Its replies are scripted rules standing in for the model, run through the same safety envelope on the same CityLearn district, so the replay works before a live agent run exists.</span><span class="short">Scripted replies, no model.</span> <a href="#howto">Replace it with a live run</a>.</div>
     </div>
 
     <section class="hero" aria-labelledby="headline">
-      <div>
-        <div class="eyebrow" id="eyebrow"></div>
-        <h1 id="headline">Loading replay</h1>
-        <p class="lede" id="lede"></p>
-        <div class="deltas-caption">Change versus stock control</div>
-        <div class="hero-row">
-          <div class="deltas" id="deltas"></div>
-          <button class="play-hero" id="play-hero" type="button">
-            <span class="disc"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg></span>
-            <span id="play-hero-label">Play the two weeks</span>
-          </button>
-        </div>
+      <div class="eyebrow" id="eyebrow"></div>
+      <h1 id="headline">Loading replay</h1>
+      <p class="lede" id="lede"></p>
+      <div class="deltas-caption">Change versus CityLearn's no-control reference</div>
+      <div class="hero-row">
+        <div class="deltas" id="deltas"></div>
+        <button class="play-hero" id="play-hero" type="button">
+          <span class="disc"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg></span>
+          <span id="play-hero-label">Play the month</span>
+        </button>
       </div>
     </section>
 
-    <section class="stage" id="stage" aria-label="Building">
+    <section class="stage" id="stage" aria-label="District">
       <div class="clock">
-        <div class="when num" id="clock-when">Day 1, 00:00</div>
+        <div class="when num" id="clock-when">Day 1, 01:00</div>
         <div class="clock-facts" id="clock-facts"></div>
       </div>
-      <div class="plans">
-        <article class="card plan-card" data-side="baseline">
-          <div class="card-head"><div class="card-title"><span class="key baseline"></span>Stock control</div></div>
-          <div class="plan" id="plan-baseline"></div>
-          <div class="plan-foot"><span>Setpoints</span><b class="num" id="sp-baseline">20 / 24 C</b></div>
+      <div class="districts">
+        <article class="card district" data-side="baseline" id="district-baseline">
+          <div class="card-head"><div class="card-title"><span class="key baseline"></span>No control</div><span class="card-sub">CityLearn reference</span></div>
+          <div class="tiles" id="tiles-baseline"></div>
         </article>
-        <article class="card plan-card" data-side="agent">
-          <div class="card-head"><div class="card-title"><span class="key agent"></span>Agent</div></div>
-          <div class="plan-status" id="plan-status"></div>
-          <div class="plan" id="plan-agent"></div>
-          <div class="plan-foot"><span>Supply air</span><b class="num" id="sp-agent">stock</b></div>
+        <article class="card district" data-side="agent" id="district-agent">
+          <div class="card-head"><div class="card-title"><span class="key agent"></span>Agent</div><div class="plan-status" id="plan-status"></div></div>
+          <div class="tiles" id="tiles-agent"></div>
         </article>
       </div>
-      <div class="scale-legend"><span>Too cool</span><span class="bar" aria-hidden="true"></span><span>Too warm</span><span>Teal is inside the BOPTEST comfort band. A glow means the safety envelope stepped in.</span></div>
+      <div class="scale-legend"><span>Too cool</span><span class="bar" aria-hidden="true"></span><span>Too warm</span><span>Teal is inside CityLearn's comfort band, setpoint plus or minus 2 C. A glow means the safety envelope stepped in.</span></div>
     </section>
 
     <section class="race" aria-label="Playback">
@@ -88,11 +83,13 @@
             <button class="chip-btn" id="next-event" type="button">Next event<svg viewBox="0 0 12 12" aria-hidden="true"><path d="m4 2 4 4-4 4" stroke="currentColor" stroke-width="1.6" fill="none"/></svg></button>
           </div>
         </div>
-        <div class="scrubber" id="scrubber" role="slider" tabindex="0" aria-label="Hour of the test" aria-valuemin="0">
+        <div class="scrubber" id="scrubber" role="slider" tabindex="0" aria-label="Hour of the episode" aria-valuemin="0">
+          <svg class="price-strip" id="price-strip" preserveAspectRatio="none" aria-hidden="true"></svg>
           <div class="track"></div><div class="fill" id="scrub-fill"></div>
           <div class="ticks" id="scrub-ticks"></div>
           <div class="thumb" id="scrub-thumb"></div>
         </div>
+        <div class="timeline-key"><span><i class="key price"></i>Electricity price along the top</span><span><i class="dot clamp"></i>Clamped</span><span><i class="dot fallback"></i>Fallback</span></div>
       </div>
 
       <div class="counters" id="counters"></div>
@@ -100,16 +97,21 @@
       <div class="charts">
         <article class="card chart-card">
           <div class="card-head">
-            <div class="card-title">Zone temperature</div>
-            <div class="zone-chips" id="zone-chips" role="group" aria-label="Zone"></div>
+            <div class="card-title">Indoor temperature</div>
+            <div class="zone-chips" id="building-chips" role="group" aria-label="Building"></div>
           </div>
-          <div class="legend"><span><i class="key agent"></i>Agent</span><span><i class="key baseline"></i>Stock</span><span><i class="key band"></i>Comfort band</span><span>Thin lines are heating setpoints</span></div>
-          <div class="chart" id="chart-zone"></div>
+          <div class="legend"><span><i class="key agent"></i>Agent</span><span><i class="key baseline"></i>No control</span><span><i class="key band"></i>Comfort band</span></div>
+          <div class="chart" id="chart-temp"></div>
         </article>
         <article class="card chart-card">
-          <div class="card-head"><div class="card-title">Supply air temperature</div><div class="card-sub">AHU discharge</div></div>
-          <div class="legend"><span><i class="key agent"></i>Agent</span><span><i class="key baseline"></i>Stock</span><span>Thin line is the agent's setpoint</span></div>
-          <div class="chart" id="chart-supply"></div>
+          <div class="card-head"><div class="card-title">District grid draw</div><div class="card-sub">kWh per hour</div></div>
+          <div class="legend"><span><i class="key agent"></i>Agent</span><span><i class="key baseline"></i>No control</span></div>
+          <div class="chart" id="chart-grid"></div>
+        </article>
+        <article class="card chart-card">
+          <div class="card-head"><div class="card-title">Battery charge</div><div class="card-sub" id="battery-sub">Building 1</div></div>
+          <div class="legend"><span><i class="key agent"></i>Agent</span><span><i class="key baseline"></i>No control</span></div>
+          <div class="chart" id="chart-battery"></div>
         </article>
       </div>
     </section>
@@ -125,30 +127,28 @@
     </section>
 
     <section aria-labelledby="score-title">
-      <div class="card-head" style="padding: 0 2px 12px"><h2 class="card-title" id="score-title" style="font-size:20px;margin:0">BOPTEST KPI scorecard</h2><span class="card-sub">Lower is better on every KPI</span></div>
+      <div class="card-head section-head"><h2 class="card-title" id="score-title">CityLearn KPI scorecard</h2><span class="card-sub">From CityLearn's own evaluate(). Lower is better on every KPI.</span></div>
       <div class="score-grid" id="scorecard"></div>
     </section>
 
     <section id="howto" aria-labelledby="howto-title">
       <article class="card howto">
-        <h2 class="card-title" id="howto-title" style="font-size:18px;margin:0">Fill this page with real runs</h2>
-        <p>Run on a machine that can reach api.boptest.net, with the key in an environment variable only. Then rebuild the data and commit <code>docs/data</code>. BOPTEST runs replace the sample one scenario at a time.</p>
-<pre><span class="c"># PowerShell, from the repository folder</span>
-py -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -e .
-$env:HYPERBOLIC_ANTHROPIC_KEY = "your key"
-hyperbolic baseline
-hyperbolic run
-hyperbolic compare
-git add docs/data; git commit -m "Add BOPTEST runs"; git push</pre>
+        <h2 class="card-title" id="howto-title">Replace the sample with a live agent run</h2>
+        <p>Everything runs on one machine: CityLearn and the dataset ship with the repository, no simulator server is involved. The key stays in an environment variable. Then rebuild the data and commit <code>docs/data</code>.</p>
+<pre><span class="c"># PowerShell, from the repository folder, Python 3.10 to 3.12</span>
+python -m pip install --no-deps CityLearn==3.0.2
+python -m pip install -e .
+python -m hyperbolic run
+python -m hyperbolic compare
+git add docs/data; git commit -m "Add live agent run"; git push</pre>
       </article>
     </section>
 
-    <div class="note"><strong>This is a simulator, not a real building.</strong> Every number on this page comes from BOPTEST (or, for the sample, an offline mock of it) and is graded by BOPTEST's own KPIs. Nothing here is connected to a real building, BAS or customer system. A win in simulation is a reason to look closer, not proof of savings in the field.</div>
+    <div class="note"><strong>This is a simulator, not a real building.</strong> Every number on this page comes from CityLearn, an open source district energy simulator, scored by CityLearn's own KPIs. Nothing here is connected to a real building, BAS or customer system. A win in simulation is a reason to look closer, not proof of savings in the field.</div>
 
     <footer>
-      <span>Hyperbolic 0.1.0</span>
-      <span>Test case: multizone_office_simple_air (BOPTEST, IBPSA Project 1)</span>
+      <span>Hyperbolic 0.2.0</span>
+      <span>Dataset: citylearn_challenge_2023_phase_2_local_evaluation (CityLearn, MIT license)</span>
       <a href="https://github.com/AddisonTech/Hyperbolic">Source</a>
     </footer>
   </main>
