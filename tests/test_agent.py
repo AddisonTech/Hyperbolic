@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fakes import BUILDINGS, FakeDistrict
 
-from hyperbolic.envelope import Envelope
+from hyperbolic.envelope import Envelope, EnvelopeConfig
 from hyperbolic.model import (
     Budget,
     CallResult,
@@ -48,7 +48,9 @@ def good_reply(battery=0.2):
 
 def run(tmp_path, sup, hours=10, budget=2.0, name="a"):
     sim = FakeDistrict()
-    ctl = AgentController(supervisor=sup, envelope=Envelope(), budget=Budget(limit_usd=budget))
+    # The peak limiter is tested in test_peak.py; here requested actions should arrive as asked.
+    ctl = AgentController(supervisor=sup, envelope=Envelope(EnvelopeConfig(peak_limit=False)),
+                          budget=Budget(limit_usd=budget))
     res = run_session(sim, ctl, RunWriter(tmp_path / name), hours=hours, sim_info={"kind": "fake"}, log=quiet)
     return res, load_jsonl(tmp_path / name / "steps.jsonl"), load_jsonl(tmp_path / name / "calls.jsonl"), sim
 

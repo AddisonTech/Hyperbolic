@@ -10,6 +10,9 @@ For each building and device the checks run in this order:
   6. comfort: in occupied hours near the edge of CityLearn's comfort band the heat
      pump may not cool less (too warm) or more (too cool) than the baseline action,
      and with overcool_guard_unoccupied no extra cooling when already cool at night
+Then, across the district:
+  7. peak limit: storage charging is trimmed so the district's load this hour stays at
+     or below the peak target (signals.peak_target_kwh), battery first, then the tank
 A null action, or any invalid reply, uses the baseline action for that device.
 Every clamp and fallback is returned with a reason so the runner can log it.
 """
@@ -25,6 +28,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
 from . import district as dc
+from .signals import PeakInfo, peak_target_kwh
 
 DEVICE_KEYS = tuple(dc.DEVICES.values())  # cooling, dhw, battery
 
@@ -39,7 +43,7 @@ class DeviceActions(BaseModel):
 @lru_cache(maxsize=8)
 def proposal_model(buildings: tuple[str, ...]) -> type[BaseModel]:
     """The only shape the model is allowed to return: a reason plus one entry per building."""
-    fields: dict[str, Any] = {"reason": (str, Field(min_length=1, max_length=300))}
+    fields: dict[str, Any] = {"reason": (str, Field(min_length=1, max_length=dc.REASON_MAX_CHARS))}
     for b in buildings:
         fields[b] = (DeviceActions, ...)
     return create_model(
@@ -116,6 +120,11 @@ class EnvelopeConfig:
     # Added in 0.3.0. Also refuse extra cooling when it is already cool in unoccupied
     # hours, so the night cannot be chilled into a cold morning.
     overcool_guard_unoccupied: bool = True
+    # Added in 0.4.0. Trim storage charging so district load never passes the peak target:
+    # the higher of today's peak so far and peak_target_fraction of the forecast peak.
+    peak_limit: bool = True
+    peak_target_fraction: float = 1.0  # picked on the tuning week by scripts/tune_rules.py
+    peak_forecast_days: int = dc.PEAK_FORECAST_DAYS
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -124,7 +133,7 @@ class EnvelopeConfig:
     def from_manifest(cls, data: dict | None) -> "EnvelopeConfig":
         """Rebuild the config a run used. Fields a run did not record keep the behavior
         they had before they existed, so older runs replay exactly."""
-        legacy = {"cooling_max_deviation": None, "overcool_guard_unoccupied": False}
+        legacy = {"cooling_max_deviation": None, "overcool_guard_unoccupied": False, "peak_limit": False}
         return cls(**{**legacy, **(data or {})})
 
     def rate(self, device: str) -> float:
@@ -143,12 +152,19 @@ class BuildingState:
     dhw_soc: float
     baseline: dict[str, float]  # device -> baseline action this hour
     bounds: dict[str, tuple[float, float]]  # device -> CityLearn action space bounds
+    # Added in 0.4.0 for the peak limiter; absent from runs recorded before it.
+    load_kwh: float | None = None  # net draw this hour with storage idle and baseline cooling
+    cooling_power_kw: float | None = None
+    battery_capacity_kwh: float | None = None
+    dhw_capacity_kwh: float | None = None
+    dhw_heater_efficiency: float | None = None
 
 
 @dataclass(frozen=True)
 class StepContext:
     time_step: int
     buildings: dict[str, BuildingState]
+    peak: PeakInfo | None = None
 
 
 @dataclass
@@ -228,8 +244,67 @@ class Envelope:
                 v = self._limit(b, d, req.get(d), st, clamps)
                 actions[b][d] = v
                 memory[f"{b}.{d}"] = st.baseline[d] if v is None else v
+        if self.config.peak_limit:
+            self._limit_peak(actions, ctx, clamps, memory)
         self.memory = memory
         return Decision(actions=actions, clamps=clamps, reason=proposal["reason"])
+
+    def peak_target(self, ctx: StepContext) -> float | None:
+        if ctx.peak is None:
+            return None
+        return peak_target_kwh(self.config.peak_target_fraction, ctx.peak.today_load_peak_kwh,
+                               ctx.peak.forecast_peak_kwh)
+
+    def district_load(self, actions: dict, ctx: StepContext) -> float | None:
+        """Estimated district draw this hour with these actions. Discharging earns no credit,
+        so the estimate never understates the load."""
+        total = 0.0
+        for b, st in ctx.buildings.items():
+            if st.load_kwh is None or st.cooling_power_kw is None:
+                return None
+            acts = actions.get(b, {})
+            total += st.load_kwh + self._extra_kwh(b, "cooling", acts.get("cooling"), st)
+            total += self._extra_kwh(b, "battery", acts.get("battery"), st)
+            total += self._extra_kwh(b, "dhw", acts.get("dhw"), st)
+        return total
+
+    @staticmethod
+    def _extra_kwh(b: str, d: str, v: float | None, st: BuildingState) -> float:
+        if v is None:
+            return 0.0
+        if d == "cooling":
+            return (v - st.baseline["cooling"]) * (st.cooling_power_kw or 0.0)
+        if v <= 0:
+            return 0.0
+        if d == "battery":
+            return v * (st.battery_capacity_kwh or 0.0)
+        return v * (st.dhw_capacity_kwh or 0.0) / max(st.dhw_heater_efficiency or 1.0, 1e-6)
+
+    def _limit_peak(self, actions: dict, ctx: StepContext, clamps: list[Clamp], memory: dict) -> None:
+        target = self.peak_target(ctx)
+        total = self.district_load(actions, ctx)
+        if target is None or total is None or total <= target + 1e-9:
+            return
+        for d in ("battery", "dhw"):
+            excess = total - target
+            charging = {b: self._extra_kwh(b, d, actions[b].get(d), st) for b, st in ctx.buildings.items()}
+            energy = sum(charging.values())
+            if energy <= 0:
+                continue
+            keep = max(0.0, (energy - excess) / energy)
+            for b, e in charging.items():
+                if e <= 0:
+                    continue
+                old = actions[b][d]
+                new = math.floor(old * keep * 1e4) / 1e4  # round down so the target holds
+                clamps.append(Clamp(f"{b}.{d}", "peak", old, new,
+                                    f"district load {total:.2f} kWh would pass the peak target {target:.2f} kWh, "
+                                    "charging trimmed"))
+                actions[b][d] = new
+                memory[f"{b}.{d}"] = new
+            total = self.district_load(actions, ctx)
+            if total <= target + 1e-9:
+                return
 
     def _limit(self, b: str, d: str, requested: float | None, st: BuildingState, clamps: list[Clamp]):
         if requested is None:
