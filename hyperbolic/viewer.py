@@ -7,6 +7,7 @@ Building twice from the same runs gives byte-identical output.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from . import district as dc
@@ -56,12 +57,14 @@ def _series(run: dict, n: int, buildings: list[str]) -> dict:
             "dhw_soc": [_r(s["outcome"][b]["dhw_soc"], 3) for s in steps],
             "grid_kwh": [_r(s["outcome"][b]["grid_kwh"], 3) for s in steps],
         }
-    cost = [sum(s["outcome"][b]["cost_usd"] for b in buildings) for s in steps]
-    emis = [sum(s["outcome"][b]["emission_kg"] for b in buildings) for s in steps]
+    # math.fsum is exactly rounded, so the result does not depend on the Python version
+    # (the built-in sum of floats changed in Python 3.12).
+    cost = [math.fsum(s["outcome"][b]["cost_usd"] for b in buildings) for s in steps]
+    emis = [math.fsum(s["outcome"][b]["emission_kg"] for b in buildings) for s in steps]
     uncomfortable = [sum(1 for b in buildings if s["outcome"][b]["uncomfortable"]) for s in steps]
     return {
         "buildings": per_b,
-        "district_grid_kwh": [_r(sum(s["outcome"][b]["grid_kwh"] for b in buildings), 3) for s in steps],
+        "district_grid_kwh": [_r(math.fsum(s["outcome"][b]["grid_kwh"] for b in buildings), 3) for s in steps],
         "cost_usd": _running(cost, 4),
         "emission_kg": _running(emis, 3),
         "discomfort_h": _running(uncomfortable, 0),
