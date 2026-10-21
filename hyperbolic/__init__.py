@@ -1,3 +1,3 @@
-"""Hyperbolic: a supervisory controller for BOPTEST building simulations."""
+"""Hyperbolic: a supervisory controller for CityLearn district simulations."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -1,0 +1,40 @@
+{
+  "buildings": [
+    "Building_1",
+    "Building_2",
+    "Building_3"
+  ],
+  "dataset": "citylearn_challenge_2023_phase_2_local_evaluation",
+  "envelope": {
+    "battery_rate_per_step": 0.5,
+    "comfort_band_k": 2.0,
+    "comfort_margin_k": 0.5,
+    "cooling_max": 1.0,
+    "cooling_min": 0.0,
+    "cooling_rate_per_step": 0.35,
+    "dhw_rate_per_step": 0.5,
+    "soc_max": 0.95,
+    "soc_min": 0.1,
+    "storage_max": 1.0,
+    "storage_min": -1.0
+  },
+  "episode_hours": 719,
+  "hours_limit": 36,
+  "mode": "agent",
+  "schema": 2,
+  "simulator": {
+    "control": true,
+    "kind": "citylearn"
+  },
+  "started_at": "2026-01-01T00:00:00+00:00",
+  "step_s": 3600,
+  "supervisor": {
+    "budget_usd": 2.0,
+    "effort": "low",
+    "kind": "scripted",
+    "max_tokens": 2000,
+    "model_id": "claude-haiku-5-5",
+    "model_key": "haiku"
+  },
+  "tool_version": "0.2.0"
+}
