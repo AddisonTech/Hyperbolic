@@ -41,6 +41,16 @@ class CityLearnSimulator:
 
     # -- Simulator protocol ------------------------------------------------------
 
+    @staticmethod
+    def check_hours(hours: int | None) -> None:
+        """CityLearn 3.0.2's outage model fails on a partial last day once a run spans two days."""
+        if not hours:
+            return
+        steps = int(hours) + 1
+        if steps >= 48 and steps % 24:
+            raise ValueError(f"--hours {hours}: runs of two days or more need hours + 1 to be a whole number "
+                             f"of days, for example {steps // 24 * 24 - 1} or {steps // 24 * 24 + 23}")
+
     def start(self, hours: int | None) -> dict:
         os.environ.setdefault("CITYLEARN_OFFLINE", "1")
         logging.getLogger().setLevel(logging.WARNING)
@@ -48,6 +58,7 @@ class CityLearnSimulator:
 
         kwargs = {"central_agent": True}
         if hours:
+            self.check_hours(hours)
             # An episode of N time steps gives N - 1 decisions.
             kwargs["simulation_end_time_step"] = int(hours)
         env = CityLearnEnv(str(self.schema), **kwargs)
@@ -137,6 +148,7 @@ class CityLearnSimulator:
             "price_forecast": [_f(o0["electricity_pricing"])]
             + [_f(o0[f"electricity_pricing_predicted_{i}"]) for i in (1, 2, 3)],
             "carbon_intensity": _f(o0["carbon_intensity"]),
+            "forecast_horizons_h": [0, *dc.FORECAST_HORIZONS_H],
         }
         buildings, baseline, bounds = {}, {}, {}
         for b in env.buildings:
@@ -153,6 +165,9 @@ class CityLearnSimulator:
                 "dhw_soc": _f(o["dhw_storage_soc"]),
                 "grid_kwh": _f(o["net_electricity_consumption"]),
                 "power_outage": bool(_f(o.get("power_outage", 0.0))),
+                "battery_capacity_kwh": round(_f(b.electrical_storage.capacity), 4),
+                "battery_power_kw": round(_f(b.electrical_storage.nominal_power), 4),
+                "dhw_capacity_kwh": round(_f(b.dhw_storage.capacity), 4),
             }
             baseline[b.name] = {"cooling": self._baseline_cooling(b), "dhw": 0.0, "battery": 0.0}
             bnd = {"cooling": [0.0, 1.0], "dhw": [-1.0, 1.0], "battery": [-1.0, 1.0]}

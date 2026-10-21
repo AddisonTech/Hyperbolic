@@ -45,6 +45,7 @@ class FakeDistrict:
                 "indoor_c": self.indoor[b], "setpoint_c": 24.0, "occupants": 3.0 if occupied else 0.0,
                 "cooling_demand_kwh": 1.0, "dhw_demand_kwh": 0.1, "plug_load_kwh": 0.4, "solar_kwh": 0.8,
                 "battery_soc": self.soc[b], "dhw_soc": self.dhw[b], "grid_kwh": 0.5, "power_outage": False,
+                "battery_capacity_kwh": 4.0, "battery_power_kw": 3.32, "dhw_capacity_kwh": 2.0,
             } for b in BUILDINGS},
             "baseline": {b: {"cooling": 0.3, "dhw": 0.0, "battery": 0.0} for b in BUILDINGS},
             "bounds": {b: {"cooling": [0.0, 1.0], "dhw": [-1.0, 1.0], "battery": [-0.83, 0.83]} for b in BUILDINGS},

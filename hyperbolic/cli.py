@@ -21,6 +21,7 @@ from .model import (
     ScriptedSupervisor,
     resolve_api_key,
 )
+from .prompt import PROMPT_VERSION, PROMPT_VERSIONS
 from .runner import AgentController, BaselineController, RunWriter, new_run_dir, replay_run, run_session
 from .viewer import find_latest_pair, write_viewer_data
 
@@ -40,15 +41,24 @@ def _sim(control: bool):
 
 
 def cmd_baseline(args) -> int:
+    sim = _sim(control=False)
+    try:
+        sim.check_hours(args.hours)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     out = new_run_dir(args.runs_dir, "baseline", "citylearn")
     print(f"baseline, {dc.DATASET} -> {out}")
-    res = run_session(_sim(control=False), BaselineController(), RunWriter(out), args.hours,
+    res = run_session(sim, BaselineController(), RunWriter(out), args.hours,
                       {"kind": "citylearn", "control": False})
     _print_result(res)
     return 0
 
 
 def cmd_run(args) -> int:
+    if args.inject_faults and not args.scripted:
+        print("error: --inject-faults needs --scripted", file=sys.stderr)
+        return 2
     if not args.scripted:
         try:
             _, source = resolve_api_key()
@@ -57,19 +67,26 @@ def cmd_run(args) -> int:
             return 2
         print(f"model key found in {source}")
     hours = args.hours or dc.EPISODE_HOURS
-    sup = (ScriptedSupervisor(args.model, faults=ScriptedSupervisor.default_faults(hours)) if args.scripted
-           else LiveSupervisor(args.model))
+    try:
+        sim = _sim(control=True)
+        sim.check_hours(args.hours)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    faults = ScriptedSupervisor.default_faults(hours) if args.inject_faults else None
+    sup = ScriptedSupervisor(args.model, faults=faults) if args.scripted else LiveSupervisor(args.model)
     ctl = AgentController(
         supervisor=sup,
         envelope=Envelope(EnvelopeConfig()),
         budget=Budget(limit_usd=args.budget),
         max_tokens=args.max_tokens,
         effort=args.effort,
+        prompt_version=args.prompt_version,
     )
     out = new_run_dir(args.runs_dir, "agent", "citylearn")
     print(f"agent, {dc.DATASET}, {sup.kind} replies, {MODELS[args.model]['id']}, "
           f"budget ${args.budget:.2f} -> {out}")
-    res = run_session(_sim(control=True), ctl, RunWriter(out), args.hours, {"kind": "citylearn", "control": True})
+    res = run_session(sim, ctl, RunWriter(out), args.hours, {"kind": "citylearn", "control": True})
     _print_result(res)
     return 0
 
@@ -140,7 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--budget", type=float, default=DEFAULT_BUDGET_USD, help="hard USD budget per run (default: 2)")
     r.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     r.add_argument("--effort", default=DEFAULT_EFFORT, choices=["low", "medium", "high"])
-    r.add_argument("--scripted", action="store_true", help="deterministic scripted replies, no API calls")
+    r.add_argument("--scripted", action="store_true",
+                   help="replies from the deterministic rule-based policy, no API calls")
+    r.add_argument("--inject-faults", action="store_true",
+                   help="with --scripted, send a bad reply now and then to exercise clamps and fallback")
+    r.add_argument("--prompt-version", type=int, default=PROMPT_VERSION, choices=PROMPT_VERSIONS,
+                   help=f"observation and prompt version (default: {PROMPT_VERSION})")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")
