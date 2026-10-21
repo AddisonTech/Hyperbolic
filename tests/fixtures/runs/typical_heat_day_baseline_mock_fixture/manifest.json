@@ -1,0 +1,42 @@
+{
+  "electricity_price": "dynamic",
+  "envelope": null,
+  "hours_limit": 30,
+  "kpi_every": 1,
+  "mode": "baseline",
+  "scenario": "typical_heat_day",
+  "scenario_hours": 336,
+  "schema": 1,
+  "simulator": {
+    "kind": "mock"
+  },
+  "started_at": "2026-01-01T00:00:00+00:00",
+  "step_s": 3600,
+  "supervisor": {
+    "kind": "none"
+  },
+  "testcase": "multizone_office_simple_air",
+  "tool_version": "0.1.0",
+  "y0": {
+    "chi_reaPChi_y": 0.0,
+    "chi_reaPPumDis_y": 0.0,
+    "heaPum_reaPHeaPum_y": 0.0,
+    "heaPum_reaPPumDis_y": 0.0,
+    "hvac_reaAhu_PFanSup_y": 0.0,
+    "hvac_reaAhu_PPumCoo_y": 0.0,
+    "hvac_reaAhu_PPumHea_y": 0.0,
+    "hvac_reaAhu_TSup_y": 291.5318,
+    "hvac_reaZonCor_CO2Zon_y": 423.66,
+    "hvac_reaZonCor_TZon_y": 292.8059,
+    "hvac_reaZonEas_CO2Zon_y": 420.0,
+    "hvac_reaZonEas_TZon_y": 291.3122,
+    "hvac_reaZonNor_CO2Zon_y": 420.0,
+    "hvac_reaZonNor_TZon_y": 290.9965,
+    "hvac_reaZonSou_CO2Zon_y": 420.0,
+    "hvac_reaZonSou_TZon_y": 291.2186,
+    "hvac_reaZonWes_CO2Zon_y": 420.0,
+    "hvac_reaZonWes_TZon_y": 291.2847,
+    "time": 950400.0,
+    "weaSta_reaWeaTDryBul_y": 274.25
+  }
+}
