@@ -29,7 +29,7 @@ from .model import (
     request_sha256,
     worst_case_cost_usd,
 )
-from .prompt import build_observation, build_request
+from .prompt import PROMPT_VERSION, Lookahead, build_request, observe
 
 
 class Simulator(Protocol):
@@ -134,7 +134,9 @@ class AgentController:
     budget: Budget
     max_tokens: int = 2000
     effort: str = "low"
+    prompt_version: int = PROMPT_VERSION
     last: Decision | None = None
+    lookahead: Lookahead = field(default_factory=Lookahead)
     mode: str = "agent"
     counts: dict = field(default_factory=lambda: {"calls": 0, "clamped": 0, "fallback": 0, "budget_skipped": 0})
 
@@ -146,14 +148,16 @@ class AgentController:
             "budget_usd": self.budget.limit_usd,
             "max_tokens": self.max_tokens,
             "effort": self.effort,
+            "prompt_version": self.prompt_version,
         }
 
     def decide(self, step: int, state: dict, writer: RunWriter) -> tuple[Decision, dict | None]:
         ctx = context_from_state(state)
         buildings = tuple(state["buildings"])
-        obs = build_observation(state, ctx, self.last)
+        self.lookahead.update(state)
+        obs = observe(self.prompt_version, state, ctx, self.last, self.lookahead)
         request = build_request(obs, self.envelope.config, buildings, self.supervisor.model_key,
-                                self.max_tokens, self.effort)
+                                self.max_tokens, self.effort, self.prompt_version)
         worst = worst_case_cost_usd(self.supervisor.model_key, request)
         call_info = None
         if not self.budget.allows(worst):
@@ -347,10 +351,12 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
         sup = m["supervisor"]
         controller = AgentController(
             supervisor=ReplaySupervisor(run_dir / "calls.jsonl", sup["model_key"]),
-            envelope=Envelope(EnvelopeConfig(**m["envelope"])),
+            envelope=Envelope(EnvelopeConfig.from_manifest(m["envelope"])),
             budget=Budget(limit_usd=float(sup["budget_usd"])),
             max_tokens=int(sup["max_tokens"]),
             effort=sup["effort"],
+            # Runs recorded before prompt versions existed used version 1.
+            prompt_version=int(sup.get("prompt_version", 1)),
         )
     writer: RunWriter = RunWriter(out_dir) if out_dir is not None else NullWriter()
     error = None

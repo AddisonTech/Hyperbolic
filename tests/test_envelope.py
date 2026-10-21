@@ -185,3 +185,36 @@ def test_config_is_respected():
     env = Envelope(EnvelopeConfig(battery_rate_per_step=0.1))
     d = env.apply(proposal(Building_1={"battery": 0.3}), ctx())
     assert d.actions["Building_1"]["battery"] == 0.1
+
+
+# -- rules added in 0.3.0 -----------------------------------------------------------
+
+
+def test_cooling_deviation_cap(envelope_v3):
+    d = envelope_v3.apply(proposal(Building_1={"cooling": 0.7}, Building_2={"cooling": 0.0}), ctx())
+    assert ("Building_1.cooling", "deviation") in rules(d)
+    assert ("Building_2.cooling", "deviation") in rules(d)
+    assert d.actions["Building_1"]["cooling"] == pytest.approx(0.55)
+    assert d.actions["Building_2"]["cooling"] == pytest.approx(0.25)
+
+
+def test_small_precool_passes(envelope_v3):
+    d = envelope_v3.apply(proposal(Building_1={"cooling": 0.5}), ctx())
+    assert d.status == "ok" and d.actions["Building_1"]["cooling"] == 0.5
+
+
+def test_overcool_guard_when_unoccupied(envelope_v3, envelope):
+    c = ctx(Building_1={"indoor": 22.3, "setpoint": 24.0, "occupied": False})
+    d = envelope_v3.apply(proposal(Building_1={"cooling": 0.5}), c)
+    assert ("Building_1.cooling", "comfort") in rules(d) and d.actions["Building_1"]["cooling"] == 0.4
+    # The v0.2.0 rule set did not guard unoccupied hours.
+    assert envelope.apply(proposal(Building_1={"cooling": 0.5}), c).status == "ok"
+
+
+def test_legacy_manifest_keeps_legacy_rules():
+    from hyperbolic.envelope import EnvelopeConfig
+
+    legacy = EnvelopeConfig.from_manifest({"battery_rate_per_step": 0.5})
+    assert legacy.cooling_max_deviation is None and legacy.overcool_guard_unoccupied is False
+    new = EnvelopeConfig.from_manifest(EnvelopeConfig().as_dict())
+    assert new == EnvelopeConfig()

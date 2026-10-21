@@ -6,8 +6,10 @@ For each building and device the checks run in this order:
   3. rate limit per step, measured from last hour's action or from this hour's
      baseline action, whichever is closer
   4. state of charge limits for the battery and the hot water tank
-  5. comfort: in occupied hours near the edge of CityLearn's comfort band the heat
-     pump may not cool less (too warm) or more (too cool) than the baseline action
+  5. cooling deviation: at most cooling_max_deviation away from the ideal-load fraction
+  6. comfort: in occupied hours near the edge of CityLearn's comfort band the heat
+     pump may not cool less (too warm) or more (too cool) than the baseline action,
+     and with overcool_guard_unoccupied no extra cooling when already cool at night
 A null action, or any invalid reply, uses the baseline action for that device.
 Every clamp and fallback is returned with a reason so the runner can log it.
 """
@@ -108,9 +110,22 @@ class EnvelopeConfig:
     soc_max: float = 0.95
     comfort_band_k: float = dc.COMFORT_BAND_K
     comfort_margin_k: float = 0.5
+    # Added in 0.3.0. Cooling may not leave the ideal-load fraction by more than this
+    # (a sustained +0.2 overcools the district by about 8 C). None disables the cap.
+    cooling_max_deviation: float | None = 0.15
+    # Added in 0.3.0. Also refuse extra cooling when it is already cool in unoccupied
+    # hours, so the night cannot be chilled into a cold morning.
+    overcool_guard_unoccupied: bool = True
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
+
+    @classmethod
+    def from_manifest(cls, data: dict | None) -> "EnvelopeConfig":
+        """Rebuild the config a run used. Fields a run did not record keep the behavior
+        they had before they existed, so older runs replay exactly."""
+        legacy = {"cooling_max_deviation": None, "overcool_guard_unoccupied": False}
+        return cls(**{**legacy, **(data or {})})
 
     def rate(self, device: str) -> float:
         return {"cooling": self.cooling_rate_per_step, "dhw": self.dhw_rate_per_step,
@@ -253,6 +268,18 @@ class Envelope:
                 clamps.append(Clamp(point, "soc", v, s_hi,
                                     f"charge would take charge from {soc:.2f} above {cfg.soc_max:g}"))
                 v = s_hi
+        if d == "cooling" and cfg.cooling_max_deviation is not None and abs(v - base) > cfg.cooling_max_deviation + 1e-9:
+            nv = base + math.copysign(cfg.cooling_max_deviation, v - base)
+            clamps.append(Clamp(point, "deviation", v, nv,
+                                f"more than {cfg.cooling_max_deviation:g} away from the ideal-load cooling {base:.2f}"))
+            v = nv
+        if d == "cooling" and not st.occupied and cfg.overcool_guard_unoccupied:
+            band, margin = cfg.comfort_band_k, cfg.comfort_margin_k
+            if st.indoor_c <= st.setpoint_c - band + margin and v > base + 1e-9:
+                clamps.append(Clamp(point, "comfort", v, base,
+                                    f"indoor {st.indoor_c:.1f} C is already near the bottom of the comfort band, "
+                                    "no extra cooling while unoccupied"))
+                v = base
         if d == "cooling" and st.occupied:
             band, margin = cfg.comfort_band_k, cfg.comfort_margin_k
             if st.indoor_c >= st.setpoint_c + band - margin and v < base - 1e-9:

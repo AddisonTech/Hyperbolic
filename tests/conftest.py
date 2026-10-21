@@ -48,6 +48,13 @@ needs_citylearn = pytest.mark.skipif(not citylearn_available(), reason="CityLear
 
 @pytest.fixture
 def envelope() -> Envelope:
+    """The v0.2.0 rule set, which recorded runs from that version replay with."""
+    return Envelope(EnvelopeConfig.from_manifest({}))
+
+
+@pytest.fixture
+def envelope_v3() -> Envelope:
+    """The current default rule set used by new runs."""
     return Envelope(EnvelopeConfig())
 
 

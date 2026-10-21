@@ -17,6 +17,15 @@ DATASET_NAME = "CityLearn 2023 challenge, local evaluation"
 EPISODE_HOURS = 719  # hourly decisions in the 720 time step episode
 STEP_SECONDS = 3600
 
+# CityLearn's forecast observations (`*_predicted_1/2/3`) in this dataset are the values
+# 6, 12 and 24 hours ahead, not the next three hours. Price forecasts are exact;
+# weather forecasts carry error. The dataset has no carbon forecast.
+FORECAST_HORIZONS_H = (6, 12, 24)
+LOOKAHEAD_HOURS = 24
+# Rules and prompts are tuned on the first week only (168 time steps, 167 decisions);
+# the full month is for reporting.
+TUNING_HOURS = 167
+
 # CityLearn action names and the short keys the supervisor uses.
 DEVICES = {
     "cooling_device": "cooling",
