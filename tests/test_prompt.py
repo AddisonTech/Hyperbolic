@@ -31,9 +31,9 @@ def fake_states(n):
     return out
 
 
-def test_default_prompt_is_version_2():
-    assert PROMPT_VERSION == 2
-    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 2
+def test_default_prompt_is_version_3():
+    assert PROMPT_VERSION == 3
+    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 3
 
 
 def test_lookahead_places_forecasts_at_their_real_horizons():
@@ -112,12 +112,12 @@ def test_v2_prompt_states_the_strategy_and_the_rules():
 def test_request_carries_the_observation_for_each_version():
     st = fake_states(1)[0]
     ctx = context_from_state(st)
-    for version in (1, 2):
+    for version in (1, 2, 3):
         obs = observe(version, st, ctx, None, Lookahead())
         req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=version)
         assert observation_from_request(req) == json.loads(json.dumps(obs))
     with pytest.raises(ValueError):
-        observe(3, st, ctx, None, Lookahead())
+        observe(4, st, ctx, None, Lookahead())
 
 
 def test_rule_policy_charges_cheap_and_discharges_into_the_peak():
@@ -153,3 +153,40 @@ def test_citylearn_forecasts_are_6_12_24_hours_ahead():
     # And they are not the next hours: hour 15 sees the evening spike 1 hour ahead but not in f[1].
     t = next(t for t in range(len(price) - 1) if price[t + 1] > price[t] * 1.3)
     assert states[t]["shared"]["price_forecast"][1] != price[t + 1]
+
+
+def test_v3_observation_has_peak_signal_and_month_end():
+    from hyperbolic.signals import PeakTracker
+
+    states = fake_states(30)
+    look, peaks = Lookahead(), PeakTracker()
+    env = Envelope(EnvelopeConfig())
+    for st in states[:27]:
+        look.update(st)
+        peaks.update(st)
+    st = states[26]
+    ctx = context_from_state(st, peaks.info(26))
+    obs = observe(3, st, ctx, None, look, env)
+    assert {"district_load_now_kwh", "target_kwh", "headroom_kwh", "forecast_today_kwh", "today_peak_so_far_kwh",
+            "month_peak_so_far_kwh", "limiter_on"} == set(obs["peak"])
+    assert obs["peak"]["target_kwh"] == round(env.peak_target(ctx), 2)
+    sig = obs["signal_outlook"]
+    assert len(sig["next_24h"]) == 24 and sig["weights"] == dc.SIGNAL_WEIGHTS
+    assert all(1 <= h <= 24 for h in sig["lowest_hours_ahead"] + sig["highest_hours_ahead"])
+    assert obs["hours_left_in_month"] == dc.EPISODE_HOURS - 26
+    assert "load_now_kwh" in obs["buildings"]["Building_1"]
+    # Version 3 only adds to version 2, so a version 2 replay is unaffected.
+    v2 = observe(2, st, ctx, None, look)
+    assert all(obs[k] == v for k, v in v2.items() if k != "buildings")
+
+
+def test_v3_prompt_orders_the_goals_and_limits_the_reason():
+    from hyperbolic.prompt import system_prompt_v3
+
+    text = system_prompt_v3(EnvelopeConfig(), ("Building_1",))
+    order = [text.index(s) for s in ("1. Comfort:", "2. Peaks:", "3. Cost and carbon:")]
+    assert order == sorted(order)
+    assert f"at most {dc.REASON_TARGET_CHARS} characters" in text and str(dc.REASON_MAX_CHARS) in text
+    assert "headroom_kwh" in text and "spread it" in text and "use the signal, not" in text
+    assert chr(0x2014) not in text
+    assert "peak.target_kwh" not in system_prompt_v3(EnvelopeConfig(peak_limit=False), ("Building_1",))

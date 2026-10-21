@@ -4,6 +4,7 @@ import json
 
 from conftest import needs_citylearn
 
+from hyperbolic import district as dc
 from hyperbolic.cli import main
 from hyperbolic.envelope import Envelope, EnvelopeConfig
 from hyperbolic.model import Budget, CallResult, ScriptedSupervisor, observation_from_request
@@ -70,14 +71,33 @@ def test_rule_policy_dry_run_and_replay(tmp_path):
     steps = load_jsonl(run_dir / "steps.jsonl")
     assert res["steps"] == HOURS and res["fallback_steps"] == 0
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["supervisor"]["prompt_version"] == 2
+    assert manifest["supervisor"]["prompt_version"] == 3
+    assert manifest["envelope"]["peak_limit"] is True
     assert manifest["envelope"]["cooling_max_deviation"] == 0.15
     battery = [s["actions"][b]["battery"] for s in steps for b in s["actions"]]
     assert any(v > 0 for v in battery) and any(v < 0 for v in battery)
     socs = [s["outcome"]["Building_1"]["battery_soc"] for s in steps]
-    assert max(socs) - min(socs) > 0.2
+    # Day one has no peak forecast yet, so the limiter allows little grid charging.
+    assert max(socs) - min(socs) > 0.05
+    assert all(len(s["decision"]["reason"]) <= dc.REASON_TARGET_CHARS for s in steps)
     rep = replay_run(run_dir)
     assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == HOURS
+
+
+@needs_citylearn
+def test_rule_policy_full_month_dry_run():
+    """The whole month through prompt version 3, the envelope with the peak limiter, and replay."""
+    from hyperbolic.sim import CityLearnSimulator
+
+    hours = dc.EPISODE_HOURS
+    ctl = AgentController(ScriptedSupervisor(), Envelope(EnvelopeConfig()), Budget(2.0))
+    w = NullWriter()
+    res = run_session(CityLearnSimulator(control=True), ctl, w, hours=hours, log=quiet)
+    assert res["steps"] == hours and res["complete"] and res["fallback_steps"] == 0
+    k = res["district_kpis"]
+    # The limiter's job: no new daily or all-time peaks (to the 1e-5 the baseline action itself moves them).
+    assert k["daily_peak_average"] <= 1.0 + 5e-5 and k["all_time_peak_average"] <= 1.0 + 5e-5
+    assert max(len(s["decision"]["reason"]) for s in w.steps) <= dc.REASON_TARGET_CHARS
 
 
 @needs_citylearn

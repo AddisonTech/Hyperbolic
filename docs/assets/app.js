@@ -687,6 +687,9 @@
 
   // ---------- boot ----------
   function boot() {
+    // The version comes from assets/version.js, which tests keep equal to the package version.
+    var v = window.HYPERBOLIC_VERSION;
+    if (v && $("app-version")) $("app-version").textContent = "Hyperbolic " + v;
     setTheme(document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark");
     $("theme-toggle").addEventListener("click", function () {
       setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");

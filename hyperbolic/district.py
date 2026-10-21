@@ -26,6 +26,20 @@ LOOKAHEAD_HOURS = 24
 # the full month is for reporting.
 TUNING_HOURS = 167
 
+# Combined hourly signal (0.4.0): price and carbon intensity, each scaled to 0..1 over
+# now plus the 24 hour outlook, then weighted. Equal weights because the goal counts
+# cost and emissions the same. 0 is the cheapest, cleanest hour in view; 1 the worst.
+SIGNAL_WEIGHTS = {"price": 0.5, "carbon": 0.5}
+
+# Peak limiter (0.4.0): the forecast of today's district peak is the lowest of the last
+# PEAK_FORECAST_DAYS days' peaks of district load before storage.
+PEAK_FORECAST_DAYS = 2
+
+# A reply's reason is rejected above REASON_MAX_CHARS; the prompt asks for at most
+# REASON_TARGET_CHARS so a long sentence never costs a fallback.
+REASON_MAX_CHARS = 300
+REASON_TARGET_CHARS = 150
+
 # CityLearn action names and the short keys the supervisor uses.
 DEVICES = {
     "cooling_device": "cooling",

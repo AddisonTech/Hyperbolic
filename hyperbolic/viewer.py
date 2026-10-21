@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 
+from . import __version__
 from . import district as dc
 from .runner import load_jsonl
 
@@ -234,3 +235,24 @@ def find_latest_pair(runs_dir: Path, extra_dirs: tuple[Path, ...] = ()) -> tuple
     if "baseline" in best and "agent" in best:
         return best["baseline"][1], best["agent"][1]
     return None
+
+
+VERSION_JS = Path("docs/assets/version.js")
+
+
+def version_js(version: str = __version__) -> str:
+    """The viewer footer reads the version from this file, not from a hard-coded string."""
+    return ("// The package version shown in the viewer footer. Kept equal to hyperbolic.__version__\n"
+            "// by tests/test_viewer.py; refresh it with: python -m hyperbolic.viewer --write-version\n"
+            f'window.HYPERBOLIC_VERSION = "{version}";\n')
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] == ["--write-version"]:
+        VERSION_JS.write_text(version_js(), encoding="utf-8")
+        print(f"wrote {VERSION_JS} for {__version__}")
+    else:
+        print("usage: python -m hyperbolic.viewer --write-version", file=sys.stderr)
+        raise SystemExit(2)

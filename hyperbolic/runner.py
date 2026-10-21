@@ -30,6 +30,7 @@ from .model import (
     worst_case_cost_usd,
 )
 from .prompt import PROMPT_VERSION, Lookahead, build_request, observe
+from .signals import PeakInfo, PeakTracker
 
 
 class Simulator(Protocol):
@@ -47,9 +48,14 @@ def _dump(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def context_from_state(state: dict) -> StepContext:
+def _opt(s: dict, key: str) -> float | None:
+    return None if s.get(key) is None else float(s[key])
+
+
+def context_from_state(state: dict, peak: PeakInfo | None = None) -> StepContext:
     return StepContext(
         time_step=int(state["time_step"]),
+        peak=peak,
         buildings={
             b: BuildingState(
                 indoor_c=float(s["indoor_c"]),
@@ -59,6 +65,11 @@ def context_from_state(state: dict) -> StepContext:
                 dhw_soc=float(s["dhw_soc"]),
                 baseline={d: float(v) for d, v in state["baseline"][b].items()},
                 bounds={d: (float(v[0]), float(v[1])) for d, v in state["bounds"][b].items()},
+                load_kwh=_opt(s, "load_kwh"),
+                cooling_power_kw=_opt(s, "cooling_power_kw"),
+                battery_capacity_kwh=_opt(s, "battery_capacity_kwh"),
+                dhw_capacity_kwh=_opt(s, "dhw_capacity_kwh"),
+                dhw_heater_efficiency=_opt(s, "dhw_heater_efficiency"),
             )
             for b, s in state["buildings"].items()
         },
@@ -137,6 +148,7 @@ class AgentController:
     prompt_version: int = PROMPT_VERSION
     last: Decision | None = None
     lookahead: Lookahead = field(default_factory=Lookahead)
+    peaks: PeakTracker | None = None
     mode: str = "agent"
     counts: dict = field(default_factory=lambda: {"calls": 0, "clamped": 0, "fallback": 0, "budget_skipped": 0})
 
@@ -152,10 +164,13 @@ class AgentController:
         }
 
     def decide(self, step: int, state: dict, writer: RunWriter) -> tuple[Decision, dict | None]:
-        ctx = context_from_state(state)
+        if self.peaks is None:
+            self.peaks = PeakTracker(self.envelope.config.peak_forecast_days)
+        self.peaks.update(state)
+        ctx = context_from_state(state, self.peaks.info(int(state["time_step"])))
         buildings = tuple(state["buildings"])
         self.lookahead.update(state)
-        obs = observe(self.prompt_version, state, ctx, self.last, self.lookahead)
+        obs = observe(self.prompt_version, state, ctx, self.last, self.lookahead, self.envelope)
         request = build_request(obs, self.envelope.config, buildings, self.supervisor.model_key,
                                 self.max_tokens, self.effort, self.prompt_version)
         worst = worst_case_cost_usd(self.supervisor.model_key, request)

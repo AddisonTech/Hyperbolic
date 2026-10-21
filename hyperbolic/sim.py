@@ -132,6 +132,16 @@ class CityLearnSimulator:
                                                           max_electric_power=b.cooling_device.nominal_power))
         return round(min(1.0, ideal / full), 4) if full > 0 else 1.0
 
+    def _load_before_storage(self, b, o) -> float:
+        """This hour's net draw with storage idle and cooling at the baseline action: what
+        the building's meter would read before any battery or tank move. Plug load and
+        solar come from this hour's observations. Hot water demand comes from the same
+        dataset series CityLearn simulates, because its observation lags by one hour."""
+        t = self.env.time_step
+        dhw = _f(b.energy_simulation.dhw_demand[t]) / max(_f(b.dhw_device.efficiency), 1e-6)
+        cooling = self._baseline_cooling(b) * _f(b.cooling_device.nominal_power)
+        return round(_f(o["non_shiftable_load"]) + cooling + dhw - _f(o["solar_generation"]), 4)
+
     def state(self) -> dict:
         """The district as CityLearn's own observations describe it at the start of this hour."""
         env = self.env
@@ -168,6 +178,9 @@ class CityLearnSimulator:
                 "battery_capacity_kwh": round(_f(b.electrical_storage.capacity), 4),
                 "battery_power_kw": round(_f(b.electrical_storage.nominal_power), 4),
                 "dhw_capacity_kwh": round(_f(b.dhw_storage.capacity), 4),
+                "cooling_power_kw": round(_f(b.cooling_device.nominal_power), 4),
+                "dhw_heater_efficiency": round(_f(b.dhw_device.efficiency), 4),
+                "load_kwh": self._load_before_storage(b, o),
             }
             baseline[b.name] = {"cooling": self._baseline_cooling(b), "dhw": 0.0, "battery": 0.0}
             bnd = {"cooling": [0.0, 1.0], "dhw": [-1.0, 1.0], "battery": [-1.0, 1.0]}

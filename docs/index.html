@@ -147,13 +147,16 @@ git add docs/data; git commit -m "Add live agent run"; git push</pre>
     <div class="note"><strong>This is a simulator, not a real building.</strong> Every number on this page comes from CityLearn, an open source district energy simulator, scored by CityLearn's own KPIs. Nothing here is connected to a real building, BAS or customer system. A win in simulation is a reason to look closer, not proof of savings in the field.</div>
 
     <footer>
-      <span>Hyperbolic 0.2.0</span>
-      <span>Dataset: citylearn_challenge_2023_phase_2_local_evaluation (CityLearn, MIT license)</span>
-      <a href="https://github.com/AddisonTech/Hyperbolic">Source</a>
+      <div class="footer-meta">
+        <span id="app-version">Hyperbolic</span>
+        <span>Dataset: citylearn_challenge_2023_phase_2_local_evaluation (CityLearn, MIT license)</span>
+      </div>
+      <p class="credit">Built by <a href="https://addisontech.github.io">Addison Smith</a> <span class="sep">&middot;</span> <a href="https://github.com/AddisonTech/Hyperbolic">GitHub</a> <span class="sep">&middot;</span> <a href="https://sixophor.com">Sixophor</a></p>
     </footer>
   </main>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <script src="assets/version.js"></script>
   <script src="data/viewer.js"></script>
   <script src="assets/app.js"></script>
 </body>

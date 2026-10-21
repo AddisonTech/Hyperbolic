@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import district as dc
+
 KEY_ENV_VARS = ("HYPERBOLIC_ANTHROPIC_KEY", "TRIAGE_ANTHROPIC_KEY")
 
 # USD per million tokens (input, output).
@@ -183,8 +185,29 @@ class ReplaySupervisor:
 
 @dataclass(frozen=True)
 class RuleParams:
-    """Knobs of the rule-based policy. Defaults are the values picked on the first week only
-    (scripts/tune_rules.py); the full month is never used to choose them."""
+    """Knobs of the rule-based policy for prompt version 3 observations. Defaults are the
+    values picked on the first week only (scripts/tune_rules.py); the full month is never
+    used to choose them."""
+
+    charge_rank: float = 0.15          # grid charging when at most this share of the next 24 h has a lower signal
+    charge_max_signal: float = 0.15    # ... and the combined signal now is at most this
+    charge_rate: float = 0.3           # battery fraction per hour when charging, spread over the low hours
+    discharge_min_signal: float = 0.55 # discharge when the combined signal now is at least this
+    discharge_rate: float = 0.8        # most battery fraction per hour when discharging
+    shave: float = 0.0                 # also discharge once district load reaches this share of the
+                                       # forecast peak; 0 turns peak shaving off
+    soc_target: float = 0.95
+    soc_reserve: float = 0.1
+    solar_soak: bool = True            # store solar the building would otherwise export for nothing
+    endgame_hours: int = 12            # no grid charging this close to the end of the month
+    max_step: float = 0.5              # largest storage move per hour, the envelope's rate limit
+    min_move: float = 0.01             # storage moves smaller than this are skipped
+
+
+@dataclass(frozen=True)
+class RuleParamsV2:
+    """Knobs of the 0.3.0 rule-based policy for prompt version 2 observations, kept as tuned
+    then so the 0.3.0 reference result reproduces."""
 
     charge_price_rank: float = 0.1     # charge when at most this share of the next 24 h is cheaper
     charge_carbon_rank: float = 0.2    # ... and at most this share is cleaner
@@ -209,9 +232,11 @@ class ScriptedSupervisor:
     """Deterministic stand-in for the model: a rule-based controller that answers through the
     same request, reply, envelope and simulator path as a live model.
 
-    For prompt version 2 observations it charges storage in cheap, clean hours and with spare
-    solar, discharges into the price peak sized to each building's own load, and can pre-cool
-    a little before a spike. Version 1 observations get the simpler v0.2.0 rule.
+    For prompt version 3 observations it charges the battery a little at a time in the
+    hours with the lowest combined price and carbon signal, within the district's peak
+    headroom, stores spare solar, discharges into high-signal hours sized to each
+    building's own load, and can shave the district peak. Version 2 observations get the
+    0.3.0 rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
     paths are exercised: out_of_range, too_fast, below_comfort, malformed, schema, missing.
@@ -220,11 +245,13 @@ class ScriptedSupervisor:
     kind = "scripted"
 
     def __init__(self, model_key: str = DEFAULT_MODEL, faults: dict[int, str] | None = None,
-                 tokens: tuple[int, int] = (0, 0), params: RuleParams | None = None) -> None:
+                 tokens: tuple[int, int] = (0, 0), params: RuleParams | None = None,
+                 params_v2: RuleParamsV2 | None = None) -> None:
         self.model_key = model_key
         self.faults = dict(faults or {})
         self.tokens = tokens
         self.params = params or RuleParams()
+        self.params_v2 = params_v2 or RuleParamsV2()
 
     @staticmethod
     def default_faults(hours: int) -> dict[int, str]:
@@ -245,7 +272,12 @@ class ScriptedSupervisor:
         if fault == "malformed":
             return CallResult('{"reason": "charge batteries", "Building_1": {"battery": 0.4', *self.tokens,
                               stop_reason="end_turn", model="scripted")
-        reply = self._policy(obs) if "price_outlook" in obs else self._policy_v1(obs)
+        if "signal_outlook" in obs:
+            reply = self._policy_v3(obs)
+        elif "price_outlook" in obs:
+            reply = self._policy(obs)
+        else:
+            reply = self._policy_v1(obs)
         names = sorted(obs["buildings"])
         if fault == "out_of_range":
             reply[names[0]]["battery"] = 1.8
@@ -263,8 +295,54 @@ class ScriptedSupervisor:
             reply[names[-1]]["dhw"] = "half"
         return CallResult(json.dumps(reply), *self.tokens, stop_reason="end_turn", model="scripted")
 
-    def _policy(self, obs: dict) -> dict:
+    def _policy_v3(self, obs: dict) -> dict:
         p = self.params
+        sig, peak = obs["signal_outlook"], obs["peak"]
+        now, rank = sig["now"], sig["rank_now"]
+        cheap_now = (now is not None and rank is not None and rank <= p.charge_rank and now <= p.charge_max_signal
+                     and obs["hours_left_in_month"] > p.endgame_hours)
+        high_now = now is not None and now >= p.discharge_min_signal
+        load_now, forecast = peak["district_load_now_kwh"], peak["forecast_today_kwh"]
+        shave_now = bool(p.shave > 0 and load_now is not None and forecast and load_now >= p.shave * forecast)
+        headroom = peak["headroom_kwh"]
+        # Grid charging shares the district's headroom in proportion to battery size.
+        caps = {b: s["battery"]["capacity_kwh"] or 0.0 for b, s in obs["buildings"].items()}
+        total_cap = sum(caps.values()) or 1.0
+        reply: dict = {}
+        notes = set()
+        for b, s in sorted(obs["buildings"].items()):
+            bat = s["battery"]
+            cap, fmax, soc = caps[b], bat["max_fraction_per_hour"] or 0.0, bat["soc"]
+            room = max(0.0, p.soc_target - soc - 0.001)
+            spare = max(0.0, soc - p.soc_reserve - 0.001)
+            load = s["load_now_kwh"]
+            battery = 0.0
+            if cap > 0 and load is not None:
+                if (high_now or shave_now) and load > 0:
+                    battery = -min(p.discharge_rate, fmax, load / cap, spare)
+                    if battery < 0:
+                        notes.add("shave the district peak" if shave_now and not high_now
+                                  else "discharge into a costly, high-carbon hour")
+                elif p.solar_soak and load < -0.05:
+                    battery = min(fmax, -load / cap, room)
+                    if battery > 0:
+                        notes.add("store spare solar")
+                elif cheap_now:
+                    # Headroom arrives rounded to 2 decimals; keep 0.02 kWh clear of the limiter.
+                    share = None if headroom is None else max(0.0, headroom - 0.02) * caps[b] / total_cap / cap
+                    battery = min(p.charge_rate, fmax, room, share if share is not None else 1.0)
+                    if battery > 0:
+                        notes.add("charge a little in a cheap, clean hour")
+            last = s["last_action"] or {}
+            lb = last.get("battery") or 0.0
+            battery = min(max(lb, 0.0) + p.max_step, max(min(lb, 0.0) - p.max_step, battery))
+            battery = 0.0 if abs(battery) < p.min_move else battery
+            reply[b] = {"cooling": None, "dhw": 0.0, "battery": math.trunc(battery * 1000) / 1000}
+        reason = "; ".join(sorted(notes)) if notes else "Nothing stands out, hold storage and meet the cooling load"
+        return {"reason": (reason[0].upper() + reason[1:])[:dc.REASON_TARGET_CHARS], **reply}
+
+    def _policy(self, obs: dict) -> dict:
+        p = self.params_v2
         po, co = obs["price_outlook"], obs["carbon_outlook"]
         now = po["now"]
         top, bottom = po["max"], po["min"]
