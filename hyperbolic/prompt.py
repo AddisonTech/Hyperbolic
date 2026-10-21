@@ -4,99 +4,78 @@ from __future__ import annotations
 
 import json
 
-from . import testcase as tc
-from .envelope import Decision, EnvelopeConfig, proposal_json_schema
+from . import district as dc
+from .envelope import Decision, EnvelopeConfig, StepContext, proposal_json_schema
 from .model import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, MODELS
 
-FORECAST_HOURS = 12
 
-
-def _r(v, nd=2):
+def _r(v, nd=3):
     return None if v is None else round(float(v), nd)
 
 
-def build_observation(
-    y: dict[str, float],
-    forecast: dict[str, list[float]],
-    last: Decision | None,
-    electricity_price: str = tc.DEFAULT_ELECTRICITY_PRICE,
-) -> dict:
-    """Compact, rounded view of the current state. Rounding keeps requests stable for replay."""
-    t = float(y["time"])
-    stock_h, stock_c = tc.stock_zone_setpoints_c(t)
-    zones = {}
-    for z in tc.ZONES:
-        zones[z] = {
-            "temp_c": _r(tc.k_to_c(y[tc.zone_temp_point(z)])),
-            "co2_ppm": _r(y.get(tc.zone_co2_point(z)), 0),
+def build_observation(state: dict, ctx: StepContext, last: Decision | None) -> dict:
+    """Compact, rounded view of the district this hour. Rounding keeps requests stable for replay."""
+    shared = state["shared"]
+    buildings = {}
+    for b, s in state["buildings"].items():
+        st = ctx.buildings[b]
+        buildings[b] = {
+            "indoor_c": _r(s["indoor_c"], 2),
+            "setpoint_c": _r(s["setpoint_c"], 2),
+            "comfort_band_c": [_r(s["setpoint_c"] - dc.COMFORT_BAND_K, 2), _r(s["setpoint_c"] + dc.COMFORT_BAND_K, 2)],
+            "occupants": _r(s["occupants"], 1),
+            "cooling_demand_kwh": _r(s["cooling_demand_kwh"]),
+            "dhw_demand_kwh": _r(s["dhw_demand_kwh"]),
+            "plug_load_kwh": _r(s["plug_load_kwh"]),
+            "solar_kwh": _r(s["solar_kwh"]),
+            "battery_soc": _r(s["battery_soc"]),
+            "dhw_soc": _r(s["dhw_soc"]),
+            "grid_kwh_last_hour": _r(s["grid_kwh"]),
+            "power_outage": bool(s.get("power_outage", False)),
+            "baseline_action": {d: _r(v) for d, v in st.baseline.items()},
+            "last_action": None if last is None else {
+                d: _r(st.baseline[d] if last.actions.get(b, {}).get(d) is None else last.actions[b][d])
+                for d in st.baseline},
         }
-    price_key = tc.PRICE_POINT[electricity_price]
-    n = min(FORECAST_HOURS, len(forecast.get("time", [])))
-    fc = []
-    for i in range(n):
-        ft = float(forecast["time"][i])
-        fc.append({
-            "hours_ahead": i,
-            "hour_of_day": tc.hour_of_day(ft),
-            "outdoor_c": _r(tc.k_to_c(forecast["TDryBul"][i]), 1),
-            "solar_w_m2": _r(forecast["HGloHor"][i], 0),
-            "price": _r(forecast[price_key][i], 4),
-            "occupants": int(round(sum(forecast[f"Occupancy[{z}]"][i] for z in tc.ZONES))),
-            "band_lower_c": _r(tc.k_to_c(forecast["LowerSetp[cor]"][i]), 1),
-            "band_upper_c": _r(tc.k_to_c(forecast["UpperSetp[cor]"][i]), 1),
-        })
-    power_w = sum(float(y.get(p, 0.0) or 0.0) for p in tc.POWER_POINTS)
-    band_lo = fc[0]["band_lower_c"] if fc else stock_h
-    band_hi = fc[0]["band_upper_c"] if fc else stock_c
     return {
-        "time_s": int(t),
-        "day_of_year": int(t // 86400),
-        "hour": tc.hour_of_day(t),
-        "occupied_now": tc.is_occupied_hour(t),
-        "outdoor_temp_c": _r(tc.k_to_c(y[tc.OUTDOOR_TEMP_POINT]), 1),
-        "supply_air_temp_c": _r(tc.k_to_c(y[tc.SUPPLY_AIR_TEMP_POINT])),
-        "hvac_power_kw": _r(power_w / 1000.0),
-        "comfort_band_c": {"lower": band_lo, "upper": band_hi},
-        "stock_setpoints_c": {"heat": stock_h, "cool": stock_c, "supply_air": tc.STOCK_SUPPLY_AIR_OCCUPIED_C},
-        "zones": zones,
-        "last_applied": {
-            "heat_c": {z: (None if last is None else _r(last.heat_c[z])) for z in tc.ZONES},
-            "cool_c": {z: (None if last is None else _r(last.cool_c[z])) for z in tc.ZONES},
-            "supply_air_c": None if last is None else _r(last.supply_air_c),
-            "status": None if last is None else last.status,
-            "clamps": [] if last is None else [f"{c.point}: {c.reason}" for c in last.clamps][:6],
-        },
-        "forecast": fc,
+        "time_step": state["time_step"],
+        "hour": shared["hour"],
+        "day_type": shared["day_type"],
+        "outdoor_c": _r(shared["outdoor_c"], 1),
+        "outdoor_c_next_1_2_3h": [_r(v, 1) for v in shared["outdoor_c_forecast"]],
+        "solar_w_m2_direct_now_and_next_3h": [_r(v, 0) for v in shared["direct_solar_forecast"]],
+        "price_per_kwh_now_and_next_3h": [_r(v, 4) for v in shared["price_forecast"]],
+        "carbon_kg_per_kwh": _r(shared["carbon_intensity"], 4),
+        "last_status": None if last is None else last.status,
+        "last_clamps": [] if last is None else [f"{c.point}: {c.reason}" for c in last.clamps][:6],
+        "buildings": buildings,
     }
 
 
-def system_prompt(cfg: EnvelopeConfig) -> str:
-    return f"""You are the hourly supervisory controller for a simulated office floor in Chicago \
-(BOPTEST test case {tc.TESTCASE}): five zones (north, east, south, west perimeter and a large core) \
-on one VAV air handler with hot water reheat from an air-to-water heat pump and cooling from an \
-air-cooled chiller. Local loops (dampers, valves, fan, economizer) are handled by the stock sequence. \
-You only choose supervisory setpoints for the next hour.
+def system_prompt(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings ({dc.DATASET_NAME}, CityLearn). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
 
-Goal, graded by BOPTEST KPIs over a two-week test: lower operating cost under a time-of-use \
-electricity price and lower energy use, without more thermal discomfort than the stock control. \
-Discomfort is counted whenever a zone is outside the comfort band (occupied 06:00 to 19:00).
+Goal, graded by CityLearn's own KPIs over the episode: lower electricity cost under the time-varying \
+price and lower carbon emissions than the no-control reference (no storage use, heat pump meeting the \
+ideal load), without more discomfort. Discomfort is any occupied hour with indoor temperature outside \
+setpoint +/- {cfg.comfort_band_k:g} C.
 
-What you can set, in degC. Use null to leave a point to the stock control:
-- per zone heat_c and cool_c (stock: 20/24 occupied, 12/30 unoccupied)
-- supply_air_c, the AHU supply air temperature setpoint (stock: 12 when occupied). Raising it in cold \
-weather cuts reheat; lowering it pre-cools.
+Actions per building, use null to keep the baseline action:
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}. The \
+baseline_action is the fraction that meets the ideal cooling load.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
 
-A safety envelope checks every value before it is written. It will clamp:
-- zone heating to {cfg.zone_heat_min_c:g} to {cfg.zone_heat_max_c:g}, zone cooling to \
-{cfg.zone_cool_min_c:g} to {cfg.zone_cool_max_c:g}, supply air to {cfg.supply_air_min_c:g} to \
-{cfg.supply_air_max_c:g} and only during occupied hours
-- any move larger than {cfg.zone_rate_k_per_step:g} K per hour for zones and \
-{cfg.supply_rate_k_per_step:g} K per hour for supply air, measured from last hour's value or from \
-the stock schedule's own step
-- heating below the comfort band lower limit or cooling above its upper limit
-- cooling less than {cfg.min_deadband_k:g} K above heating
-An invalid reply hands every point back to the stock control for that hour. Clamps are logged \
-against you, so stay inside the limits.
+A safety envelope checks every value before it is applied. It will clamp:
+- any value outside its range or CityLearn's action space
+- any move larger than {cfg.cooling_rate_per_step:g} (cooling), {cfg.dhw_rate_per_step:g} (dhw) or \
+{cfg.battery_rate_per_step:g} (battery) per hour, measured from last hour's action or this hour's baseline
+- charge that would leave a battery or tank outside {cfg.soc_min:g} to {cfg.soc_max:g} state of charge
+- in occupied hours within {cfg.comfort_margin_k:g} C of a comfort band edge, cooling below the baseline \
+when warm or above it when cool
+An invalid reply uses the baseline action everywhere for that hour. Clamps are logged against you.
 
 Reply with one JSON object only, matching the schema. "reason" is one short plain sentence a \
 building operator would understand."""
@@ -104,20 +83,20 @@ building operator would understand."""
 
 def user_message(obs: dict) -> str:
     return (
-        "Current state and forecast. Values in degC, W/m2, $/kWh, kW.\n"
+        "District state this hour. Energy in kWh, temperatures in C, price in $/kWh.\n"
         "OBSERVATION_JSON\n" + json.dumps(obs, separators=(",", ":"), sort_keys=True)
     )
 
 
-def build_request(obs: dict, cfg: EnvelopeConfig, model_key: str,
+def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], model_key: str,
                   max_tokens: int = DEFAULT_MAX_TOKENS, effort: str = DEFAULT_EFFORT) -> dict:
     return {
         "model": MODELS[model_key]["id"],
         "max_tokens": max_tokens,
-        "system": system_prompt(cfg),
+        "system": system_prompt(cfg, buildings),
         "messages": [{"role": "user", "content": user_message(obs)}],
         "output_config": {
             "effort": effort,
-            "format": {"type": "json_schema", "schema": proposal_json_schema()},
+            "format": {"type": "json_schema", "schema": proposal_json_schema(buildings)},
         },
     }

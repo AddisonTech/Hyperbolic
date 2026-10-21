@@ -1,0 +1,61 @@
+"""Facts about the CityLearn dataset Hyperbolic supervises.
+
+Dataset: citylearn_challenge_2023_phase_2_local_evaluation, the public local
+evaluation set of the CityLearn 2023 challenge, shipped unchanged in
+hyperbolic/data. Three buildings, one month of hourly steps, an LSTM model of
+indoor temperature, a heat pump for cooling, a domestic hot water tank, a
+battery and rooftop PV per building.
+"""
+
+from __future__ import annotations
+
+from importlib import resources
+from pathlib import Path
+
+DATASET = "citylearn_challenge_2023_phase_2_local_evaluation"
+DATASET_NAME = "CityLearn 2023 challenge, local evaluation"
+EPISODE_HOURS = 719  # hourly decisions in the 720 time step episode
+STEP_SECONDS = 3600
+
+# CityLearn action names and the short keys the supervisor uses.
+DEVICES = {
+    "cooling_device": "cooling",
+    "dhw_storage": "dhw",
+    "electrical_storage": "battery",
+}
+DEVICE_LABELS = {
+    "cooling": "heat pump cooling, fraction of nominal power",
+    "dhw": "hot water tank, fraction of capacity to charge (+) or discharge (-)",
+    "battery": "battery, fraction of capacity to charge (+) or discharge (-)",
+}
+
+# CityLearn counts an occupied hour as uncomfortable outside setpoint +/- this band
+# (citylearn.data.EnergySimulation.DEFUALT_COMFORT_BAND).
+COMFORT_BAND_K = 2.0
+
+# CityLearn KPIs reported by CityLearnEnv.evaluate(). Every one is lower-is-better.
+# Ratios are relative to CityLearn's no-control reference (no storage, heat pump at
+# ideal load), so the reference run itself scores 1.0 on them.
+KPIS = {
+    "cost_total": ("Electricity cost", "ratio to no control"),
+    "carbon_emissions_total": ("Carbon emissions", "ratio to no control"),
+    "electricity_consumption_total": ("Grid import", "ratio to no control"),
+    "discomfort_proportion": ("Discomfort", "share of occupied hours"),
+    "discomfort_hot_proportion": ("Too warm", "share of occupied hours"),
+    "discomfort_cold_proportion": ("Too cool", "share of occupied hours"),
+    "ramping_average": ("Ramping", "ratio to no control"),
+    "daily_peak_average": ("Daily peak", "ratio to no control"),
+    "all_time_peak_average": ("All-time peak", "ratio to no control"),
+    "daily_one_minus_load_factor_average": ("1 - daily load factor", "ratio to no control"),
+    "one_minus_thermal_resilience_proportion": ("1 - thermal resilience", "share of outage hours"),
+    "power_outage_normalized_unserved_energy_total": ("Unserved energy in outages", "share"),
+}
+HEADLINE_KPIS = ("cost_total", "carbon_emissions_total", "discomfort_proportion")
+
+
+def dataset_dir() -> Path:
+    return Path(str(resources.files("hyperbolic").joinpath("data", DATASET)))
+
+
+def schema_path() -> Path:
+    return dataset_dir() / "schema.json"

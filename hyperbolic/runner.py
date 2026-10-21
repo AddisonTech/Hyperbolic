@@ -1,10 +1,10 @@
 """Baseline, agent and replay runners.
 
-A run directory holds everything needed to replay it with zero network calls:
-  manifest.json  settings, envelope config, initial measurements
-  steps.jsonl    per hour: forecast, overwrites sent, measurements back, KPIs, decision
+A run directory holds everything needed to replay it with zero model or simulator calls:
+  manifest.json  settings, dataset, envelope config
+  steps.jsonl    per hour: district state, actions applied, outcome, decision
   calls.jsonl    per model call: full request, reply, tokens, cost
-  result.json    final KPIs and counts
+  result.json    CityLearn KPIs and counts
 """
 
 from __future__ import annotations
@@ -13,15 +13,15 @@ import datetime as dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from . import __version__
-from . import testcase as tc
-from .boptest import Simulator
-from .envelope import Decision, Envelope, EnvelopeConfig, StepContext, parse_reply
+from . import district as dc
+from .envelope import BuildingState, Decision, Envelope, EnvelopeConfig, StepContext, parse_reply
 from .model import (
-    Budget,
     MODELS,
+    Budget,
+    CallResult,
     ReplayMismatch,
     ReplaySupervisor,
     Supervisor,
@@ -31,11 +31,38 @@ from .model import (
 )
 from .prompt import build_observation, build_request
 
-FORECAST_HORIZON_S = 12 * 3600
+
+class Simulator(Protocol):
+    """What the runners need from a simulator. CityLearnSimulator and RecordedSimulator satisfy it."""
+
+    kind: str
+
+    def start(self, hours: int | None) -> dict: ...
+    def step(self, actions: dict | None) -> tuple[dict, dict | None]: ...
+    def kpis(self) -> list[dict]: ...
+    def close(self) -> None: ...
 
 
 def _dump(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def context_from_state(state: dict) -> StepContext:
+    return StepContext(
+        time_step=int(state["time_step"]),
+        buildings={
+            b: BuildingState(
+                indoor_c=float(s["indoor_c"]),
+                setpoint_c=float(s["setpoint_c"]),
+                occupied=float(s["occupants"]) > 0,
+                battery_soc=float(s["battery_soc"]),
+                dhw_soc=float(s["dhw_soc"]),
+                baseline={d: float(v) for d, v in state["baseline"][b].items()},
+                bounds={d: (float(v[0]), float(v[1])) for d, v in state["bounds"][b].items()},
+            )
+            for b, s in state["buildings"].items()
+        },
+    )
 
 
 class RunWriter:
@@ -44,7 +71,7 @@ class RunWriter:
         self.manifest: dict = {}
 
     def start(self, manifest: dict) -> None:
-        # Files are created only once the simulator has accepted the scenario.
+        # Files are created only once the simulator has started.
         self.dir.mkdir(parents=True, exist_ok=False)
         self._steps = (self.dir / "steps.jsonl").open("w", encoding="utf-8")
         self._calls = (self.dir / "calls.jsonl").open("w", encoding="utf-8")
@@ -88,17 +115,16 @@ class NullWriter(RunWriter):
 
 
 class BaselineController:
+    """CityLearn's no-control reference: storage idle, heat pump meeting the ideal load."""
+
     mode = "baseline"
+    envelope = None
 
     def describe(self) -> dict:
         return {"kind": "none"}
 
-    def decide(self, step: int, y: dict, fc: dict, writer: RunWriter) -> tuple[Decision | None, dict | None]:
+    def decide(self, step: int, state: dict, writer: RunWriter) -> tuple[Decision | None, dict | None]:
         return None, None
-
-    @staticmethod
-    def overwrites(decision: Decision | None, time_s: float) -> dict[str, float]:
-        return {}
 
 
 @dataclass
@@ -106,7 +132,6 @@ class AgentController:
     supervisor: Supervisor
     envelope: Envelope
     budget: Budget
-    electricity_price: str = tc.DEFAULT_ELECTRICITY_PRICE
     max_tokens: int = 2000
     effort: str = "low"
     last: Decision | None = None
@@ -123,15 +148,16 @@ class AgentController:
             "effort": self.effort,
         }
 
-    def decide(self, step: int, y: dict, fc: dict, writer: RunWriter) -> tuple[Decision, dict | None]:
-        obs = build_observation(y, fc, self.last, self.electricity_price)
-        ctx = StepContext(time_s=float(y["time"]), band_lower_c=obs["comfort_band_c"]["lower"],
-                          band_upper_c=obs["comfort_band_c"]["upper"])
-        request = build_request(obs, self.envelope.config, self.supervisor.model_key, self.max_tokens, self.effort)
+    def decide(self, step: int, state: dict, writer: RunWriter) -> tuple[Decision, dict | None]:
+        ctx = context_from_state(state)
+        buildings = tuple(state["buildings"])
+        obs = build_observation(state, ctx, self.last)
+        request = build_request(obs, self.envelope.config, buildings, self.supervisor.model_key,
+                                self.max_tokens, self.effort)
         worst = worst_case_cost_usd(self.supervisor.model_key, request)
         call_info = None
         if not self.budget.allows(worst):
-            decision = self.envelope.fallback(self.budget.stop_reason or "budget stop")
+            decision = self.envelope.fallback(ctx, self.budget.stop_reason or "budget stop")
             self.counts["budget_skipped"] += 1
         else:
             try:
@@ -139,8 +165,6 @@ class AgentController:
             except ReplayMismatch:
                 raise
             except Exception as exc:  # any client failure is a missing reply, never a crash
-                from .model import CallResult
-
                 res = CallResult(None, error=f"client error: {type(exc).__name__}")
             cost = call_cost_usd(self.supervisor.model_key, res.input_tokens, res.output_tokens)
             self.budget.charge(cost)
@@ -163,9 +187,9 @@ class AgentController:
             })
             call_info = {"request_sha256": sha, "cost_usd": round(cost, 8), "error": res.error}
             if res.error:
-                decision = self.envelope.fallback(f"no usable reply: {res.error}")
+                decision = self.envelope.fallback(ctx, f"no usable reply: {res.error}")
             else:
-                proposal, err = parse_reply(res.text)
+                proposal, err = parse_reply(res.text, buildings)
                 decision = self.envelope.apply(proposal, ctx, None if err is None else f"invalid reply: {err}")
         if decision.status == "clamped":
             self.counts["clamped"] += 1
@@ -174,98 +198,74 @@ class AgentController:
         self.last = decision
         return decision, call_info
 
-    @staticmethod
-    def overwrites(decision: Decision | None, time_s: float) -> dict[str, float]:
-        return {} if decision is None else decision.to_boptest_u(time_s)
 
-
-def new_run_dir(runs_dir: Path, scenario: str, mode: str, sim_kind: str) -> Path:
+def new_run_dir(runs_dir: Path, mode: str, sim_kind: str) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return runs_dir / f"{scenario}_{mode}_{sim_kind}_{stamp}"
+    return runs_dir / f"{dc.DATASET}_{mode}_{sim_kind}_{stamp}"
+
+
+def district_kpis(kpis: list[dict]) -> dict[str, float | None]:
+    return {k["cost_function"]: k["value"] for k in kpis if k.get("level") == "district"}
 
 
 def run_session(
     sim: Simulator,
     controller: BaselineController | AgentController,
     writer: RunWriter,
-    scenario: str,
-    electricity_price: str = tc.DEFAULT_ELECTRICITY_PRICE,
     hours: int | None = None,
-    kpi_every: int = 1,
     sim_info: dict | None = None,
     log=print,
 ) -> dict:
-    if scenario not in tc.SCENARIOS:
-        raise ValueError(f"unknown scenario {scenario}")
-    sc = tc.SCENARIOS[scenario]
-    total_hours = (sc["end_day"] - sc["start_day"]) * 24
-    sim.select(tc.TESTCASE)
-    if hasattr(sim, "wait_until_running"):
-        sim.wait_until_running()
+    state = sim.start(hours)
+    episode_hours = hours or dc.EPISODE_HOURS
     try:
-        sim.set_step(tc.STEP_SECONDS)
-        y = sim.set_scenario(scenario, electricity_price)
-        start_time = float(y["time"])
-        end_time = start_time + total_hours * 3600
-        envelope_cfg = controller.envelope.config.as_dict() if isinstance(controller, AgentController) else None
+        envelope_cfg = controller.envelope.config.as_dict() if controller.envelope else None
         writer.start({
-            "schema": 1,
+            "schema": 2,
             "tool_version": __version__,
             "mode": controller.mode,
-            "testcase": tc.TESTCASE,
-            "scenario": scenario,
-            "electricity_price": electricity_price,
-            "step_s": tc.STEP_SECONDS,
+            "dataset": dc.DATASET,
+            "buildings": list(state["buildings"]),
+            "step_s": dc.STEP_SECONDS,
             "hours_limit": hours,
-            "scenario_hours": total_hours,
-            "kpi_every": kpi_every,
-            "simulator": sim_info or {"kind": type(sim).__name__},
+            "episode_hours": dc.EPISODE_HOURS,
+            "simulator": sim_info or {"kind": sim.kind},
             "supervisor": controller.describe(),
             "envelope": envelope_cfg,
             "started_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-            "y0": y,
         })
-        points = tc.forecast_points(electricity_price)
         step = 0
-        while True:
-            t = float(y["time"])
-            fc = sim.forecast(points, FORECAST_HORIZON_S, tc.STEP_SECONDS)
-            decision, call_info = controller.decide(step, y, fc, writer)
-            u = controller.overwrites(decision, t)
-            y_next = sim.advance(u)
-            if not y_next:
-                break
-            kpi = sim.kpi() if kpi_every and (step + 1) % kpi_every == 0 else None
+        while state is not None:
+            decision, call_info = controller.decide(step, state, writer)
+            actions = None if decision is None else decision.resolved(context_from_state(state))
+            outcome, next_state = sim.step(actions)
             writer.step({
                 "step": step,
-                "time": t,
-                "forecast": fc,
-                "u": u,
-                "y": y_next,
-                "kpi": kpi,
+                "state": state,
+                "actions": actions,
+                "outcome": outcome,
                 "decision": None if decision is None else decision.as_dict(),
                 "call": call_info,
             })
             if decision is not None and decision.status != "ok":
                 why = decision.fallback or "; ".join(f"{c.point} {c.rule}" for c in decision.clamps)
                 log(f"  hour {step:3d}: {decision.status}: {why}")
-            y = y_next
             step += 1
-            if step % 24 == 0:
-                log(f"  day {step // 24} of {total_hours // 24} done")
+            if step % 168 == 0:
+                log(f"  week {step // 168} done")
+            state = next_state
             if hours and step >= hours:
                 break
-            if float(y["time"]) >= end_time - 1:
-                break
-        final_kpi = sim.kpi()
+        kpis = sim.kpis()
     finally:
-        sim.stop()
+        sim.close()
     counts = getattr(controller, "counts", {})
     budget = getattr(controller, "budget", None)
     result = {
         "steps": step,
-        "complete": step >= total_hours,
-        "final_kpi": final_kpi,
+        "complete": step >= episode_hours,
+        "kpis": kpis,
+        "district_kpis": district_kpis(kpis),
         "calls": counts.get("calls", 0),
         "clamped_steps": counts.get("clamped", 0),
         "fallback_steps": counts.get("fallback", 0),
@@ -289,49 +289,35 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 class RecordedSimulator:
-    """Serves a run's recorded simulator responses and checks every overwrite sent."""
+    """Serves a run's recorded states and outcomes and checks every action sent."""
+
+    kind = "replay"
 
     def __init__(self, run_dir: Path) -> None:
         self.manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         self.steps = load_jsonl(run_dir / "steps.jsonl")
         result_path = run_dir / "result.json"
         self.result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else {}
-        self.testid: str | None = None
         self.i = 0
-        self.u_mismatches: list[int] = []
-        self._kpi_seen: set[int] = set()
+        self.action_mismatches: list[int] = []
 
-    def select(self, testcase: str) -> str:
-        self.testid = "replay"
-        return self.testid
+    def start(self, hours: int | None) -> dict:
+        self.i = 0
+        return self.steps[0]["state"]
 
-    def set_step(self, seconds: int) -> None:
-        pass
-
-    def set_scenario(self, time_period: str, electricity_price: str) -> dict:
-        return dict(self.manifest["y0"])
-
-    def forecast(self, points, horizon, interval) -> dict:
-        return self.steps[self.i]["forecast"] if self.i < len(self.steps) else {}
-
-    def advance(self, u: dict) -> dict:
-        if self.i >= len(self.steps):
-            return {}
+    def step(self, actions: dict | None) -> tuple[dict, dict | None]:
         rec = self.steps[self.i]
-        if json.loads(_dump(u)) != rec["u"]:
-            self.u_mismatches.append(self.i)
+        if json.loads(_dump(actions)) != rec["actions"]:
+            self.action_mismatches.append(self.i)
         self.i += 1
-        return rec["y"]
+        nxt = self.steps[self.i]["state"] if self.i < len(self.steps) else None
+        return rec["outcome"], nxt
 
-    def kpi(self) -> dict:
-        # First call after an advance is that step's KPI; a second call is the final KPI.
-        if self.i > 0 and self.i not in self._kpi_seen:
-            self._kpi_seen.add(self.i)
-            return self.steps[self.i - 1]["kpi"]
-        return self.result.get("final_kpi") or (self.steps[-1]["kpi"] if self.steps else {})
+    def kpis(self) -> list[dict]:
+        return self.result.get("kpis", [])
 
-    def stop(self) -> None:
-        self.testid = None
+    def close(self) -> None:
+        pass
 
 
 @dataclass
@@ -352,10 +338,9 @@ class ReplayReport:
 
 
 def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) -> ReplayReport:
-    """Re-run a recorded run through the same code path with zero network calls."""
+    """Re-run a recorded run through the same code path with zero model or simulator calls."""
     sim = RecordedSimulator(run_dir)
     m = sim.manifest
-    hours = len(sim.steps)
     if m["mode"] == "baseline":
         controller: BaselineController | AgentController = BaselineController()
     else:
@@ -364,32 +349,26 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
             supervisor=ReplaySupervisor(run_dir / "calls.jsonl", sup["model_key"]),
             envelope=Envelope(EnvelopeConfig(**m["envelope"])),
             budget=Budget(limit_usd=float(sup["budget_usd"])),
-            electricity_price=m["electricity_price"],
             max_tokens=int(sup["max_tokens"]),
             effort=sup["effort"],
         )
     writer: RunWriter = RunWriter(out_dir) if out_dir is not None else NullWriter()
     error = None
     try:
-        run_session(sim, controller, writer, m["scenario"], m["electricity_price"], hours=hours,
-                    kpi_every=int(m.get("kpi_every", 1)), sim_info={"kind": "replay", "source": run_dir.name},
-                    log=log)
+        run_session(sim, controller, writer, hours=len(sim.steps),
+                    sim_info={"kind": "replay", "source": run_dir.name}, log=log)
     except ReplayMismatch as exc:
         error = str(exc)
         if out_dir is not None:
             writer.finish({"replay_error": error})
-    if isinstance(writer, NullWriter):
-        replayed = writer.steps
-    else:
-        replayed = load_jsonl(out_dir / "steps.jsonl")  # type: ignore[operator]
-    mismatched = sorted(set(sim.u_mismatches))
+    replayed = writer.steps if isinstance(writer, NullWriter) else load_jsonl(out_dir / "steps.jsonl")  # type: ignore[operator]
+    mismatched = sorted(set(sim.action_mismatches))
     identical = 0
     for orig, new in zip(sim.steps, replayed):
-        if orig.get("decision") == new.get("decision") and orig["u"] == new["u"]:
+        if orig.get("decision") == new.get("decision") and orig["actions"] == new["actions"]:
             identical += 1
-        else:
-            if orig["step"] not in mismatched:
-                mismatched.append(orig["step"])
+        elif orig["step"] not in mismatched:
+            mismatched.append(orig["step"])
     if len(replayed) != len(sim.steps):
         mismatched.append(min(len(replayed), len(sim.steps)))
     calls = load_jsonl(run_dir / "calls.jsonl")

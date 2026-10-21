@@ -1,0 +1,23 @@
+{
+  "buildings": [
+    "Building_1",
+    "Building_2",
+    "Building_3"
+  ],
+  "dataset": "citylearn_challenge_2023_phase_2_local_evaluation",
+  "envelope": null,
+  "episode_hours": 719,
+  "hours_limit": 36,
+  "mode": "baseline",
+  "schema": 2,
+  "simulator": {
+    "control": false,
+    "kind": "citylearn"
+  },
+  "started_at": "2026-01-01T00:00:00+00:00",
+  "step_s": 3600,
+  "supervisor": {
+    "kind": "none"
+  },
+  "tool_version": "0.2.0"
+}

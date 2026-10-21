@@ -182,13 +182,14 @@ class ReplaySupervisor:
 
 
 class ScriptedSupervisor:
-    """Deterministic stand-in for the model, used for the offline sample run and tests.
+    """Deterministic stand-in for the model, used for the labeled sample run and tests.
 
     It reads the observation embedded in the request and answers with a simple
-    rule-based policy: supply air reset on outdoor temperature, a small occupied
-    heating bump, and off-peak preheat. On listed steps it injects a bad reply so
-    the envelope and fallback paths are exercised: out_of_range, too_fast,
-    below_comfort, malformed, schema, missing.
+    price-aware rule: charge storage when the price is about to rise or solar is
+    spare, discharge when the price is at its local high, and leave cooling at the
+    baseline. On listed steps it injects a bad reply so the envelope and
+    fallback paths are exercised: out_of_range, too_fast, below_comfort,
+    malformed, schema, missing.
     """
 
     kind = "scripted"
@@ -206,7 +207,7 @@ class ScriptedSupervisor:
         h, i = 31, 0
         while h < hours:
             faults[h] = kinds[i % len(kinds)]
-            h += 37
+            h += 53
             i += 1
         return faults
 
@@ -216,73 +217,53 @@ class ScriptedSupervisor:
         if fault == "missing":
             return CallResult(None, error="timeout: no reply within 90 s (scripted)", model="scripted")
         if fault == "malformed":
-            return CallResult('{"reason": "raise supply air", "nor": {"heat_c": 21', *self.tokens,
+            return CallResult('{"reason": "charge batteries", "Building_1": {"battery": 0.4', *self.tokens,
                               stop_reason="end_turn", model="scripted")
         reply = self._policy(obs)
+        names = sorted(obs["buildings"])
         if fault == "out_of_range":
-            reply["cor"]["heat_c"] = 27.5
-            reply["reason"] = "Core is cool, push heating hard."
+            reply[names[0]]["battery"] = 1.8
+            reply["reason"] = "Price spike ahead, fill the first battery all at once."
         elif fault == "too_fast":
-            if obs["occupied_now"]:
-                reply["supply_air_c"] = 18.0
-            for z in ("nor", "sou"):
-                reply[z]["heat_c"] = (reply[z]["heat_c"] or obs["stock_setpoints_c"]["heat"]) + 5.0
-            reply["reason"] = "Big jump to get ahead of the cold front."
+            for b in names[:2]:
+                last = obs["buildings"][b]["last_action"] or {"battery": 0.0}
+                reply[b]["battery"] = (last["battery"] or 0.0) - 0.9
+            reply["reason"] = "Dump two batteries into the evening peak."
         elif fault == "below_comfort":
-            if obs["occupied_now"]:
-                reply["wes"]["heat_c"] = obs["comfort_band_c"]["lower"] - 2.0
-            reply["eas"]["cool_c"] = obs["comfort_band_c"]["upper"] + 2.0
-            reply["reason"] = "Let east and west drift to save energy."
+            for b in names:
+                reply[b]["cooling"] = 0.0
+            reply["reason"] = "Switch cooling off for an hour to save on the peak price."
         elif fault == "schema":
-            reply["supply_air_c"] = "fifteen"
+            reply[names[-1]]["dhw"] = "half"
         return CallResult(json.dumps(reply), *self.tokens, stop_reason="end_turn", model="scripted")
 
     @staticmethod
     def _policy(obs: dict) -> dict:
-        toa = obs["outdoor_temp_c"]
-        hour = obs["hour"]
-        occupied = obs["occupied_now"]
-        last = obs["last_applied"]
-        price_now = obs["forecast"][0]["price"] if obs["forecast"] else 0.0
-        prices = [f["price"] for f in obs["forecast"][:6]] or [price_now]
-        zones = {}
-        reason_bits = []
-        for z, zs in obs["zones"].items():
-            heat = cool = None
-            if occupied:
-                heat = 20.0 if hour == tc_start_hour() or zs["temp_c"] > 23.0 else 20.5
-            elif hour in (3, 4, 5) and toa < 2.0:
-                prev = last["heat_c"].get(z)
-                base = 12.0 if prev is None else prev
-                heat = min(base + 2.0, 18.0)
-            zones[z] = {"heat_c": heat, "cool_c": cool}
-        if occupied:
-            target = 16.0 if toa < -5 else 15.0 if toa < 5 else 13.5 if toa < 12 else None
-            prev = last["supply_air_c"]
-            if target is None:
-                supply = None
-            else:
-                base = 12.0 if prev is None else prev
-                supply = round(min(target, base + 1.5) if target > base else max(target, base - 1.5), 2)
-        else:
-            supply = None
-        if occupied and supply is not None:
-            reason_bits.append(f"Outdoor {toa:.0f} C, reset supply air toward {supply:g} C to cut reheat")
-        if occupied:
-            reason_bits.append("hold heating at 20.5 C for startup comfort")
-        elif any(v["heat_c"] for v in zones.values()):
-            reason_bits.append(f"Off-peak preheat ahead of 6:00 while price is ${price_now:.3f}/kWh")
-        else:
-            peak = max(prices) > price_now * 1.5
-            reason_bits.append("Unoccupied, leave setback to stock control"
-                               + (", peak price ahead" if peak else ""))
-        return {"reason": "; ".join(reason_bits)[:300], **zones, "supply_air_c": supply}
-
-
-def tc_start_hour() -> int:
-    from .testcase import OCCUPIED_START_HOUR
-
-    return OCCUPIED_START_HOUR
+        prices = obs["price_per_kwh_now_and_next_3h"]
+        now, ahead = prices[0], max(prices[1:] or prices)
+        cheap_now = ahead > now * 1.15
+        peak_now = now >= ahead and now > min(prices) * 1.15
+        reply: dict = {}
+        notes = set()
+        for b, s in sorted(obs["buildings"].items()):
+            spare_solar = s["solar_kwh"] - s["plug_load_kwh"] - s["cooling_demand_kwh"]
+            soc, tank = s["battery_soc"], s["dhw_soc"]
+            battery = dhw = 0.0
+            if peak_now:
+                battery = -min(0.25, max(0.0, soc - 0.15))
+                dhw = -min(0.15, max(0.0, tank - 0.15))
+            elif cheap_now:
+                battery = min(0.25, max(0.0, 0.9 - soc))
+                dhw = min(0.15, max(0.0, 0.9 - tank))
+            elif spare_solar > 0.2:
+                battery = min(0.2, max(0.0, 0.9 - soc))
+            if battery < -0.01:
+                notes.add("discharge storage into the price peak")
+            elif battery > 0.01:
+                notes.add("soak up spare solar" if not cheap_now else "charge storage before the price rises")
+            reply[b] = {"cooling": None, "dhw": round(dhw, 3), "battery": round(battery, 3)}
+        reason = "; ".join(sorted(notes)) if notes else "Price flat, hold storage and meet the cooling load"
+        return {"reason": reason[0].upper() + reason[1:], **reply}
 
 
 def observation_from_request(request: dict) -> dict:

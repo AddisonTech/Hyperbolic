@@ -7,12 +7,13 @@ Building twice from the same runs gives byte-identical output.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
-from . import testcase as tc
+from . import district as dc
 from .runner import load_jsonl
 
-SCHEMA = 1
+SCHEMA = 2
 
 
 def _r(v, nd=3):
@@ -35,64 +36,61 @@ def load_run(run_dir: Path) -> dict:
 
 def is_sample(run: dict) -> bool:
     m = run["manifest"]
-    return m["simulator"].get("kind") != "boptest" or m["supervisor"].get("kind") == "scripted"
+    return m["simulator"].get("kind") != "citylearn" or m["supervisor"].get("kind") == "scripted"
 
 
-def _running(steps: list[dict], key: str, scale: float) -> list[float | None]:
-    out, last = [], 0.0
-    for s in steps:
-        k = s.get("kpi") or {}
-        if k.get(key) is not None:
-            last = float(k[key]) * scale
-        out.append(_r(last, 3))
+def _running(values: list[float], nd: int = 3) -> list[float]:
+    out, total = [], 0.0
+    for v in values:
+        total += v
+        out.append(_r(total, nd))
     return out
 
 
-def _series(run: dict, n: int, agent: bool) -> dict:
+def _series(run: dict, n: int, buildings: list[str]) -> dict:
     steps = run["steps"][:n]
-    tz = {z: [_r(tc.k_to_c(s["y"][tc.zone_temp_point(z)]), 2) for s in steps] for z in tc.ZONES}
-    heat = {z: [] for z in tc.ZONES}
-    cool = {z: [] for z in tc.ZONES}
-    tsup_set = []
-    for s in steps:
-        stock_h, stock_c = tc.stock_zone_setpoints_c(s["time"])
-        d = s.get("decision") if agent else None
-        for z in tc.ZONES:
-            hv = d["heat_c"][z] if d else None
-            cv = d["cool_c"][z] if d else None
-            heat[z].append(_r(stock_h if hv is None else hv, 2))
-            cool[z].append(_r(stock_c if cv is None else cv, 2))
-        tsup_set.append(None if not d else _r(d["supply_air_c"], 2))
-    power = [_r(sum(float(s["y"].get(p, 0.0) or 0.0) for p in tc.POWER_POINTS) / 1000.0, 2) for s in steps]
-    out = {
-        "zone_temp_c": tz,
-        "heat_set_c": heat,
-        "cool_set_c": cool,
-        "supply_air_c": [_r(tc.k_to_c(s["y"][tc.SUPPLY_AIR_TEMP_POINT]), 2) for s in steps],
-        "supply_air_set_c": tsup_set,
-        "power_kw": power,
-        "energy_kwh": _running(steps, "ener_tot", tc.FLOOR_AREA_M2),
-        "cost_usd": _running(steps, "cost_tot", tc.FLOOR_AREA_M2),
-        "discomfort_kh": _running(steps, "tdis_tot", 1.0),
-        "kpi": {k: _r(v, 6) for k, v in sorted((run["result"].get("final_kpi") or {}).items())},
+    per_b = {}
+    for b in buildings:
+        per_b[b] = {
+            "indoor_c": [_r(s["outcome"][b]["indoor_c"], 2) for s in steps],
+            "battery_soc": [_r(s["outcome"][b]["battery_soc"], 3) for s in steps],
+            "dhw_soc": [_r(s["outcome"][b]["dhw_soc"], 3) for s in steps],
+            "grid_kwh": [_r(s["outcome"][b]["grid_kwh"], 3) for s in steps],
+        }
+    # math.fsum is exactly rounded, so the result does not depend on the Python version
+    # (the built-in sum of floats changed in Python 3.12).
+    cost = [math.fsum(s["outcome"][b]["cost_usd"] for b in buildings) for s in steps]
+    emis = [math.fsum(s["outcome"][b]["emission_kg"] for b in buildings) for s in steps]
+    uncomfortable = [sum(1 for b in buildings if s["outcome"][b]["uncomfortable"]) for s in steps]
+    return {
+        "buildings": per_b,
+        "district_grid_kwh": [_r(math.fsum(s["outcome"][b]["grid_kwh"] for b in buildings), 3) for s in steps],
+        "cost_usd": _running(cost, 4),
+        "emission_kg": _running(emis, 3),
+        "discomfort_h": _running(uncomfortable, 0),
+        "kpi": {k: _r(v, 6) for k, v in sorted((run["result"].get("district_kpis") or {}).items())},
         "run": run["name"],
         "steps": len(run["steps"]),
         "complete": bool(run["result"].get("complete")),
     }
-    return out
+
+
+def _actions(run: dict, n: int, buildings: list[str]) -> dict:
+    steps = run["steps"][:n]
+    return {b: {d: [_r((s["actions"] or {}).get(b, {}).get(d), 3) for s in steps] for d in ("cooling", "dhw", "battery")}
+            for b in buildings}
 
 
 def _decisions(run: dict, n: int) -> list[dict]:
     out = []
     for s in run["steps"][:n]:
         d = s.get("decision") or {}
-        clamps = d.get("clamps") or []
         out.append({
             "status": d.get("status", "ok"),
             "reason": d.get("reason") or "",
             "fallback": d.get("fallback"),
             "clamps": [{"point": c["point"], "rule": c["rule"], "requested": c["requested"],
-                        "applied": c["applied"], "reason": c["reason"]} for c in clamps],
+                        "applied": c["applied"], "reason": c["reason"]} for c in d.get("clamps") or []],
         })
     return out
 
@@ -104,38 +102,37 @@ def _pct(agent: float | None, base: float | None) -> float | None:
 
 
 def headline(base_kpi: dict, agent_kpi: dict) -> dict:
-    """Plain verdict, stated as bluntly when the agent loses as when it wins."""
-    cost = _pct(agent_kpi.get("cost_tot"), base_kpi.get("cost_tot"))
-    ener = _pct(agent_kpi.get("ener_tot"), base_kpi.get("ener_tot"))
-    tdis = _pct(agent_kpi.get("tdis_tot"), base_kpi.get("tdis_tot"))
-    b_t, a_t = base_kpi.get("tdis_tot") or 0.0, agent_kpi.get("tdis_tot") or 0.0
-    comfort_ok = a_t <= b_t + 0.05
+    """Plain verdict from CityLearn's KPIs, stated as bluntly when the agent loses."""
+    cost = _pct(agent_kpi.get("cost_total"), base_kpi.get("cost_total"))
+    emis = _pct(agent_kpi.get("carbon_emissions_total"), base_kpi.get("carbon_emissions_total"))
+    b_d = base_kpi.get("discomfort_proportion") or 0.0
+    a_d = agent_kpi.get("discomfort_proportion") or 0.0
+    dis_pts = round((a_d - b_d) * 100.0, 1)
+    comfort_ok = a_d <= b_d + 0.005
     saves_cost = cost is not None and cost < 0
-    saves_energy = ener is not None and ener < 0
+    saves_emis = emis is not None and emis < 0
 
     def mag(p):
-        return f"{abs(p):.1f}%"
+        return f"{abs(p or 0):.1f}%"
 
-    if comfort_ok and saves_cost and saves_energy:
-        tone = "win"
-        text = f"Cost down {mag(cost)} and energy down {mag(ener)} at equal or better comfort"
-    elif comfort_ok and (saves_cost or saves_energy):
-        tone = "mixed"
-        good = f"cost down {mag(cost)}" if saves_cost else f"energy down {mag(ener)}"
-        bad = f"energy up {mag(ener)}" if saves_cost else f"cost up {mag(cost)}"
-        text = f"Comfort held, {good}, but {bad}"
+    if comfort_ok and saves_cost and saves_emis:
+        tone, text = "win", f"Cost down {mag(cost)} and emissions down {mag(emis)} at equal or better comfort"
+    elif comfort_ok and (saves_cost or saves_emis):
+        good = f"cost down {mag(cost)}" if saves_cost else f"emissions down {mag(emis)}"
+        bad = f"emissions up {mag(emis)}" if saves_cost else f"cost up {mag(cost)}"
+        tone, text = "mixed", f"Comfort held, {good}, but {bad}"
     elif comfort_ok:
-        tone = "loss" if (a_t >= b_t - 0.05) else "mixed"
-        if tone == "loss":
-            text = f"The agent lost: cost up {mag(cost or 0)} and energy up {mag(ener or 0)} with no comfort gain"
+        if a_d < b_d - 0.005:
+            tone = "mixed"
+            text = (f"Discomfort down {abs(dis_pts):.1f} points, paid for with cost up {mag(cost)} "
+                    f"and emissions up {mag(emis)}")
         else:
-            text = f"Discomfort down {mag(tdis or 0)}, paid for with cost up {mag(cost or 0)} and energy up {mag(ener or 0)}"
+            tone, text = "loss", f"The agent lost: cost up {mag(cost)} and emissions up {mag(emis)} with no comfort gain"
     else:
-        tone = "loss"
-        text = f"The agent lost on comfort: discomfort up {mag(tdis or 0)}"
+        tone, text = "loss", f"The agent lost on comfort: discomfort up {dis_pts:.1f} points"
         if saves_cost:
             text += f", even though cost fell {mag(cost)}"
-    return {"tone": tone, "text": text, "cost_pct": cost, "energy_pct": ener, "discomfort_pct": tdis}
+    return {"tone": tone, "text": text, "cost_pct": cost, "emissions_pct": emis, "discomfort_points": dis_pts}
 
 
 def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
@@ -143,34 +140,33 @@ def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
     bm, am = base["manifest"], agent["manifest"]
     if bm["mode"] != "baseline" or am["mode"] != "agent":
         raise ValueError("expected a baseline run and an agent run")
-    if bm["scenario"] != am["scenario"] or bm["electricity_price"] != am["electricity_price"]:
-        raise ValueError("baseline and agent runs are from different scenarios")
+    if bm["dataset"] != am["dataset"]:
+        raise ValueError("baseline and agent runs use different datasets")
     n = min(len(base["steps"]), len(agent["steps"]))
     if n == 0:
         raise ValueError("a run has no steps")
+    buildings = list(am["buildings"])
     steps = agent["steps"][:n]
-    fc0 = [s["forecast"] for s in steps]
-    price_key = tc.PRICE_POINT[am["electricity_price"]]
-    decisions = _decisions(agent, n)
+    first = steps[0]["state"]["time_step"]
     ar = agent["result"]
     sup = am["supervisor"]
+    decisions = _decisions(agent, n)
     return {
-        "id": am["scenario"],
-        "name": tc.SCENARIOS[am["scenario"]]["name"],
-        "electricity_price": am["electricity_price"],
-        "testcase": am["testcase"],
-        "sample": is_sample(base) or is_sample(agent),
-        "simulator": am["simulator"].get("kind"),
+        "id": am["dataset"],
+        "name": dc.DATASET_NAME,
         "hours": n,
-        "scenario_hours": am.get("scenario_hours"),
-        "start_time_s": steps[0]["time"],
-        "time_s": [int(s["time"]) + tc.STEP_SECONDS for s in steps],
-        "band_lower_c": [_r(tc.k_to_c(f["LowerSetp[cor]"][1 if len(f["time"]) > 1 else 0]), 1) for f in fc0],
-        "band_upper_c": [_r(tc.k_to_c(f["UpperSetp[cor]"][1 if len(f["time"]) > 1 else 0]), 1) for f in fc0],
-        "price": [_r(f[price_key][0], 4) for f in fc0],
-        "outdoor_c": [_r(tc.k_to_c(s["y"][tc.OUTDOOR_TEMP_POINT]), 1) for s in steps],
-        "baseline": _series(base, n, agent=False),
-        "agent": {**_series(agent, n, agent=True), "decisions": decisions},
+        "episode_hours": am.get("episode_hours"),
+        "baseline_sample": is_sample(base),
+        "agent_sample": is_sample(agent),
+        "hour_of_day": [int(s["state"]["shared"]["hour"]) for s in steps],
+        "day": [int((s["state"]["time_step"] - first) // 24) + 1 for s in steps],
+        "price": [_r(s["state"]["shared"]["price_forecast"][0], 4) for s in steps],
+        "carbon": [_r(s["state"]["shared"]["carbon_intensity"], 4) for s in steps],
+        "outdoor_c": [_r(s["state"]["shared"]["outdoor_c"], 1) for s in steps],
+        "setpoint_c": {b: [_r(s["outcome"][b]["setpoint_c"], 2) for s in steps] for b in buildings},
+        "occupied": {b: [1 if s["outcome"][b]["occupants"] > 0 else 0 for s in steps] for b in buildings},
+        "baseline": _series(base, n, buildings),
+        "agent": {**_series(agent, n, buildings), "decisions": decisions, "actions": _actions(agent, n, buildings)},
         "agent_run": {
             "supervisor": sup.get("kind"),
             "model_key": sup.get("model_key"),
@@ -183,22 +179,20 @@ def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
             "budget_stopped": bool(ar.get("budget_stopped")),
             "envelope": am.get("envelope"),
         },
-        "headline": headline(base["result"].get("final_kpi") or {}, ar.get("final_kpi") or {}),
+        "headline": headline(base["result"].get("district_kpis") or {}, ar.get("district_kpis") or {}),
     }
 
 
-def build_viewer_data(pairs: list[tuple[Path, Path]]) -> dict:
-    scenarios = [build_scenario(b, a) for b, a in pairs]
-    order = {k: i for i, k in enumerate(tc.SCENARIOS)}
-    scenarios.sort(key=lambda s: order.get(s["id"], 99))
+def build_viewer_data(pair: tuple[Path, Path]) -> dict:
+    s = build_scenario(*pair)
     return {
         "schema": SCHEMA,
-        "testcase": tc.TESTCASE,
-        "floor_area_m2": tc.FLOOR_AREA_M2,
-        "zones": [{"id": z, "name": tc.ZONE_NAMES[z], "area_m2": tc.ZONE_AREA_M2[z]} for z in tc.ZONES],
-        "kpis": [{"id": k, "name": v[0], "unit": v[1]} for k, v in tc.KPIS.items()],
-        "sample": any(s["sample"] for s in scenarios),
-        "scenarios": scenarios,
+        "dataset": dc.DATASET,
+        "comfort_band_k": dc.COMFORT_BAND_K,
+        "buildings": [{"id": b, "name": b.replace("_", " ")} for b in s["setpoint_c"]],
+        "kpis": [{"id": k, "name": v[0], "unit": v[1]} for k, v in dc.KPIS.items()],
+        "sample": s["baseline_sample"] or s["agent_sample"],
+        "scenarios": [s],
     }
 
 
@@ -206,10 +200,10 @@ def dumps(data: dict) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
 
 
-def write_viewer_data(pairs: list[tuple[Path, Path]], out_path: Path) -> dict:
+def write_viewer_data(pair: tuple[Path, Path], out_path: Path) -> dict:
     """Write viewer.json and, next to it, viewer.js (the same data as a script so the
     page also works when opened straight from disk)."""
-    data = build_viewer_data(pairs)
+    data = build_viewer_data(pair)
     text = dumps(data)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
@@ -218,25 +212,25 @@ def write_viewer_data(pairs: list[tuple[Path, Path]], out_path: Path) -> dict:
     return data
 
 
-def find_latest_pairs(runs_dir: Path, scenarios: list[str] | None = None,
-                      prefer_simulator: str | None = None) -> list[tuple[Path, Path]]:
-    """Latest complete baseline and agent run per scenario, matched on simulator kind."""
-    found: dict[tuple[str, str, str], tuple[str, Path]] = {}
-    if not runs_dir.exists():
-        return []
-    for d in sorted(p for p in runs_dir.iterdir() if (p / "result.json").exists()):
+def find_latest_pair(runs_dir: Path, extra_dirs: tuple[Path, ...] = ()) -> tuple[Path, Path] | None:
+    """Latest complete baseline run and latest agent run; a live agent run wins over a scripted one.
+
+    extra_dirs are searched too, so the baseline committed under results/ pairs with a
+    fresh agent run in runs/.
+    """
+    candidates = []
+    for root in (runs_dir, *extra_dirs):
+        if root.exists():
+            candidates += [p for p in root.iterdir() if (p / "result.json").exists()]
+    best: dict[str, tuple[tuple, Path]] = {}
+    for d in sorted(candidates):
         m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
-        if scenarios and m["scenario"] not in scenarios:
+        if m.get("dataset") != dc.DATASET:
             continue
-        key = (m["scenario"], m["mode"], m["simulator"].get("kind", ""))
-        stamp = m.get("started_at", "")
-        if key not in found or stamp >= found[key][0]:
-            found[key] = (stamp, d)
-    pairs = []
-    for sc in tc.SCENARIOS:
-        for sim in ([prefer_simulator] if prefer_simulator else ["boptest", "mock"]):
-            b, a = found.get((sc, "baseline", sim)), found.get((sc, "agent", sim))
-            if b and a:
-                pairs.append((b[1], a[1]))
-                break
-    return pairs
+        live = m["supervisor"].get("kind") == "live"
+        key = (live, m.get("started_at", ""))
+        if m["mode"] not in best or key >= best[m["mode"]][0]:
+            best[m["mode"]] = (key, d)
+    if "baseline" in best and "agent" in best:
+        return best["baseline"][1], best["agent"][1]
+    return None

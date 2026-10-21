@@ -4,16 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hyperbolic"
-version = "0.1.0"
-description = "Supervisory setpoint control for BOPTEST building simulations, behind a deterministic safety envelope."
+version = "0.2.0"
+description = "Supervisory control for CityLearn district simulations, behind a deterministic safety envelope."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "AddisonTech" }]
-requires-python = ">=3.10"
+# numpy<2, which CityLearn 3.0.2 needs, has no wheels for Python 3.13.
+requires-python = ">=3.10,<3.13"
+# CityLearn itself is installed with `pip install --no-deps CityLearn==3.0.2`: its published
+# pins (scikit-learn<=1.2.2, openstudio, torchvision, doe_xstock) are only needed by optional
+# features and would force a source build on Python 3.12. These are the packages its
+# simulation core imports.
 dependencies = [
     "anthropic>=1.0",
-    "httpx>=0.27",
     "pydantic>=2.6",
+    "numpy>=1.24,<2",
+    "pandas",
+    "gymnasium<=0.28.1",
+    "torch",
+    "scikit-learn",
+    "pyyaml",
+    "simplejson",
+    "platformdirs",
+    "requests",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +39,7 @@ hyperbolic = "hyperbolic.cli:main"
 packages = ["hyperbolic"]
 
 [tool.setuptools.package-data]
-hyperbolic = ["data/*.csv"]
+hyperbolic = ["data/*.txt", "data/citylearn_challenge_2023_phase_2_local_evaluation/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
