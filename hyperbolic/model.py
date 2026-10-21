@@ -1,7 +1,8 @@
-"""Model access: key lookup, pricing, budget, and the three supervisors.
+"""Model access: key lookup, pricing, budget, and the supervisors.
 
 LiveSupervisor     calls the Messages API.
 ScriptedSupervisor returns deterministic rule-based replies for offline runs and tests.
+HoldSupervisor     always keeps the baseline action (the live page's baseline option).
 ReplaySupervisor   serves recorded replies from a run directory, with zero API calls.
 """
 
@@ -432,6 +433,23 @@ class ScriptedSupervisor:
             reply[b] = {"cooling": None, "dhw": round(dhw, 3), "battery": round(battery, 3)}
         reason = "; ".join(sorted(notes)) if notes else "Price flat, hold storage and meet the cooling load"
         return {"reason": reason[0].upper() + reason[1:], **reply}
+
+
+class HoldSupervisor:
+    """Answers every hour with null actions, so the envelope applies the baseline action
+    everywhere: the no-control reference run through the agent path. Used by the live
+    page's "baseline" option so that run is recorded, replayed and published like any other."""
+
+    kind = "hold"
+
+    def __init__(self, model_key: str = DEFAULT_MODEL) -> None:
+        self.model_key = model_key
+
+    def call(self, step: int, request: dict) -> CallResult:
+        obs = observation_from_request(request)
+        reply = {"reason": "Hold the no-control actions."}
+        reply.update({b: {"cooling": None, "dhw": None, "battery": None} for b in sorted(obs["buildings"])})
+        return CallResult(json.dumps(reply), stop_reason="end_turn", model="hold")
 
 
 def observation_from_request(request: dict) -> dict:

@@ -36,8 +36,12 @@ def load_run(run_dir: Path) -> dict:
 
 
 def is_sample(run: dict) -> bool:
+    """Only a live model run on CityLearn is a real agent result; scripted, rule-based and
+    held-baseline runs are labeled as samples."""
     m = run["manifest"]
-    return m["simulator"].get("kind") != "citylearn" or m["supervisor"].get("kind") == "scripted"
+    if m["simulator"].get("kind") != "citylearn":
+        return True
+    return m["mode"] == "agent" and m["supervisor"].get("kind") != "live"
 
 
 def _running(values: list[float], nd: int = 3) -> list[float]:
@@ -82,18 +86,19 @@ def _actions(run: dict, n: int, buildings: list[str]) -> dict:
             for b in buildings}
 
 
+def _decision(s: dict) -> dict:
+    d = s.get("decision") or {}
+    return {
+        "status": d.get("status", "ok"),
+        "reason": d.get("reason") or "",
+        "fallback": d.get("fallback"),
+        "clamps": [{"point": c["point"], "rule": c["rule"], "requested": c["requested"],
+                    "applied": c["applied"], "reason": c["reason"]} for c in d.get("clamps") or []],
+    }
+
+
 def _decisions(run: dict, n: int) -> list[dict]:
-    out = []
-    for s in run["steps"][:n]:
-        d = s.get("decision") or {}
-        out.append({
-            "status": d.get("status", "ok"),
-            "reason": d.get("reason") or "",
-            "fallback": d.get("fallback"),
-            "clamps": [{"point": c["point"], "rule": c["rule"], "requested": c["requested"],
-                        "applied": c["applied"], "reason": c["reason"]} for c in d.get("clamps") or []],
-        })
-    return out
+    return [_decision(s) for s in run["steps"][:n]]
 
 
 def _pct(agent: float | None, base: float | None) -> float | None:
@@ -245,6 +250,126 @@ def version_js(version: str = __version__) -> str:
     return ("// The package version shown in the viewer footer. Kept equal to hyperbolic.__version__\n"
             "// by tests/test_viewer.py; refresh it with: python -m hyperbolic.viewer --write-version\n"
             f'window.HYPERBOLIC_VERSION = "{version}";\n')
+
+
+# -- live mode: the same scenario, one hour at a time ---------------------------------
+
+
+class RunningKpis:
+    """Running estimates of the headline KPIs from hourly outcomes, for the live page.
+
+    The final scores always come from CityLearn's evaluate(); these follow the same
+    definitions closely enough to watch a run unfold: district cost, emissions and grid
+    import clipped at zero each hour, discomfort as uncomfortable occupied building
+    hours, and daily and all-time peaks of district draw.
+    """
+
+    def __init__(self) -> None:
+        self.side = {k: {"cost": 0.0, "emission": 0.0, "import": 0.0, "occupied": 0, "uncomfortable": 0,
+                         "day_peak": {}, "peak": None} for k in ("baseline", "agent")}
+
+    def add(self, side: str, rec: dict, buildings: list[str], day: int) -> None:
+        a, out = self.side[side], rec["outcome"]
+        a["cost"] += max(0.0, math.fsum(out[b]["cost_usd"] for b in buildings))
+        a["emission"] += max(0.0, math.fsum(out[b]["emission_kg"] for b in buildings))
+        grid = math.fsum(out[b]["grid_kwh"] for b in buildings)
+        a["import"] += max(0.0, grid)
+        a["day_peak"][day] = max(a["day_peak"].get(day, grid), grid)
+        a["peak"] = grid if a["peak"] is None else max(a["peak"], grid)
+        for b in buildings:
+            if out[b]["occupants"] > 0:
+                a["occupied"] += 1
+                a["uncomfortable"] += 1 if out[b]["uncomfortable"] else 0
+
+    def kpis(self) -> tuple[dict, dict]:
+        base, agent = self.side["baseline"], self.side["agent"]
+
+        def ratio(x, y):
+            return None if abs(y) < 1e-12 else round(x / y, 6)
+
+        def mean(d):
+            return math.fsum(d.values()) / len(d) if d else 0.0
+
+        def share(a):
+            return round(a["uncomfortable"] / a["occupied"], 6) if a["occupied"] else 0.0
+
+        out = {}
+        for name, a in (("baseline", base), ("agent", agent)):
+            out[name] = {
+                "cost_total": ratio(a["cost"], base["cost"]),
+                "carbon_emissions_total": ratio(a["emission"], base["emission"]),
+                "electricity_consumption_total": ratio(a["import"], base["import"]),
+                "discomfort_proportion": share(a),
+                "daily_peak_average": ratio(mean(a["day_peak"]), mean(base["day_peak"])),
+                "all_time_peak_average": None if base["peak"] in (None, 0) else ratio(a["peak"], base["peak"]),
+            }
+        return out["baseline"], out["agent"]
+
+
+class ScenarioStream:
+    """Builds one hour of the viewer's scenario at a time from a baseline record and an
+    agent record for the same hour. Concatenating the rows gives the same series as
+    build_scenario over the same runs (tests hold it to that)."""
+
+    def __init__(self, buildings: list[str]) -> None:
+        self.buildings = list(buildings)
+        self.first: int | None = None
+        self.totals = {k: {"cost": 0.0, "emission": 0.0, "discomfort": 0} for k in ("baseline", "agent")}
+        self.running = RunningKpis()
+
+    def _side(self, side: str, rec: dict) -> dict:
+        out, bs = rec["outcome"], self.buildings
+        t = self.totals[side]
+        t["cost"] += math.fsum(out[b]["cost_usd"] for b in bs)
+        t["emission"] += math.fsum(out[b]["emission_kg"] for b in bs)
+        t["discomfort"] += sum(1 for b in bs if out[b]["uncomfortable"])
+        return {
+            "buildings": {b: {"indoor_c": _r(out[b]["indoor_c"], 2), "battery_soc": _r(out[b]["battery_soc"], 3),
+                              "dhw_soc": _r(out[b]["dhw_soc"], 3), "grid_kwh": _r(out[b]["grid_kwh"], 3)} for b in bs},
+            "district_grid_kwh": _r(math.fsum(out[b]["grid_kwh"] for b in bs), 3),
+            "cost_usd": _r(t["cost"], 4),
+            "emission_kg": _r(t["emission"], 3),
+            "discomfort_h": _r(t["discomfort"], 0),
+        }
+
+    def add(self, base_rec: dict, agent_rec: dict) -> dict:
+        st, bs = agent_rec["state"], self.buildings
+        if self.first is None:
+            self.first = st["time_step"]
+        day = int((st["time_step"] - self.first) // 24) + 1
+        self.running.add("baseline", base_rec, bs, day)
+        self.running.add("agent", agent_rec, bs, day)
+        base_kpi, agent_kpi = self.running.kpis()
+        agent = self._side("agent", agent_rec)
+        agent["decision"] = _decision(agent_rec)
+        agent["actions"] = {b: {d: _r((agent_rec["actions"] or {}).get(b, {}).get(d), 3)
+                                for d in ("cooling", "dhw", "battery")} for b in bs}
+        out = agent_rec["outcome"]
+        return {
+            "i": agent_rec["step"],
+            "hour_of_day": int(st["shared"]["hour"]),
+            "day": day,
+            "price": _r(st["shared"]["price_forecast"][0], 4),
+            "carbon": _r(st["shared"]["carbon_intensity"], 4),
+            "outdoor_c": _r(st["shared"]["outdoor_c"], 1),
+            "setpoint_c": {b: _r(out[b]["setpoint_c"], 2) for b in bs},
+            "occupied": {b: 1 if out[b]["occupants"] > 0 else 0 for b in bs},
+            "baseline": self._side("baseline", base_rec),
+            "agent": agent,
+            "kpi": {"baseline": base_kpi, "agent": agent_kpi},
+            "headline": headline(base_kpi, agent_kpi),
+        }
+
+
+def viewer_shell(buildings: list[str]) -> dict:
+    """The parts of build_viewer_data that do not depend on the run, for the live page."""
+    return {
+        "schema": SCHEMA,
+        "dataset": dc.DATASET,
+        "comfort_band_k": dc.COMFORT_BAND_K,
+        "buildings": [{"id": b, "name": b.replace("_", " ")} for b in buildings],
+        "kpis": [{"id": k, "name": v[0], "unit": v[1]} for k, v in dc.KPIS.items()],
+    }
 
 
 if __name__ == "__main__":

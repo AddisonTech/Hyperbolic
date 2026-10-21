@@ -1,4 +1,4 @@
-"""Command line: hyperbolic baseline | run | replay | compare."""
+"""Command line: hyperbolic baseline | run | replay | compare | serve."""
 
 from __future__ import annotations
 
@@ -129,6 +129,20 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .live import serve
+
+    try:
+        return serve(port=args.port, host=args.host, runs_dir=args.runs_dir, docs=args.docs,
+                     open_browser=not args.no_browser)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error: could not listen on 127.0.0.1:{args.port} ({exc.strerror or exc}); try --port", file=sys.stderr)
+        return 2
+
+
 def _fmt(v):
     return "n/a" if v is None else f"{v:.4f}"
 
@@ -175,6 +189,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--pair", nargs=2, metavar=("BASELINE_DIR", "AGENT_DIR"))
     c.add_argument("--out", type=Path, default=DEFAULT_VIEWER_DATA)
     c.set_defaults(func=cmd_compare)
+
+    sv = sub.add_parser("serve", help="watch a run live in the browser (local only, 127.0.0.1)")
+    sv.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default: 8765)")
+    sv.add_argument("--host", default="127.0.0.1", help="only 127.0.0.1 or localhost are accepted")
+    sv.add_argument("--runs-dir", type=Path, default=Path("runs"), help="where live runs are recorded")
+    sv.add_argument("--docs", type=Path, default=Path("docs"), help="the viewer folder; Publish writes its data/")
+    sv.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
+    sv.set_defaults(func=cmd_serve)
     return p
 
 

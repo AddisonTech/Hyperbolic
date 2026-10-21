@@ -13,7 +13,7 @@ import datetime as dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from . import __version__
 from . import district as dc
@@ -227,6 +227,14 @@ def district_kpis(kpis: list[dict]) -> dict[str, float | None]:
     return {k["cost_function"]: k["value"] for k in kpis if k.get("level") == "district"}
 
 
+class RunControl(Protocol):
+    """Lets a caller pause or stop a run between hours (used by `hyperbolic serve`)."""
+
+    def checkpoint(self) -> bool:
+        """Block while paused; return False once a stop has been asked for."""
+        ...
+
+
 def run_session(
     sim: Simulator,
     controller: BaselineController | AgentController,
@@ -234,8 +242,19 @@ def run_session(
     hours: int | None = None,
     sim_info: dict | None = None,
     log=print,
+    on_step: Callable[[dict], None] | None = None,
+    control: RunControl | None = None,
+    max_steps: int | None = None,
 ) -> dict:
+    """Run one episode of `hours` hourly decisions (the full month if None).
+
+    on_step receives each hour's record right after it is written. control may pause or
+    stop the run between hours; a stopped run is saved as partial. max_steps ends the run
+    early without changing the episode length the simulator was started with, so a short
+    run sees the same outages as the longer one it is compared with.
+    """
     state = sim.start(hours)
+    stopped = False
     episode_hours = hours or dc.EPISODE_HOURS
     try:
         envelope_cfg = controller.envelope.config.as_dict() if controller.envelope else None
@@ -255,17 +274,25 @@ def run_session(
         })
         step = 0
         while state is not None:
+            if max_steps is not None and step >= max_steps:
+                break
+            if control is not None and not control.checkpoint():
+                stopped = True
+                break
             decision, call_info = controller.decide(step, state, writer)
             actions = None if decision is None else decision.resolved(context_from_state(state))
             outcome, next_state = sim.step(actions)
-            writer.step({
+            rec = {
                 "step": step,
                 "state": state,
                 "actions": actions,
                 "outcome": outcome,
                 "decision": None if decision is None else decision.as_dict(),
                 "call": call_info,
-            })
+            }
+            writer.step(rec)
+            if on_step is not None:
+                on_step(rec)
             if decision is not None and decision.status != "ok":
                 why = decision.fallback or "; ".join(f"{c.point} {c.rule}" for c in decision.clamps)
                 log(f"  hour {step:3d}: {decision.status}: {why}")
@@ -294,6 +321,9 @@ def run_session(
         "budget_stop_reason": budget.stop_reason if budget else None,
         "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
     }
+    if stopped:
+        result["stopped"] = True
+        result["stop_reason"] = f"stopped by the user after {step} of {episode_hours} hours"
     writer.finish(result)
     return result
 

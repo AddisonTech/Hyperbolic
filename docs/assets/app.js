@@ -1,4 +1,5 @@
-/* Hyperbolic replay viewer. Static: reads window.HYPERBOLIC_VIEWER_DATA from data/viewer.js. */
+/* Hyperbolic replay viewer. Static: reads window.HYPERBOLIC_VIEWER_DATA from data/viewer.js.
+   Live mode (`hyperbolic serve` only) feeds it growing data through window.HyperbolicViewer.render. */
 (function () {
   "use strict";
 
@@ -255,7 +256,7 @@
     var m = { t: 12, r: narrow ? 44 : 50, b: 24, l: 36 };
     var sc = state.sc;
     var plotW = width - m.l - m.r;
-    var windowH = Math.min(sc.hours - 1, narrow ? 48 : 72);
+    var windowH = Math.max(1, Math.min(sc.hours - 1, narrow ? 48 : 72));
     var pph = plotW / windowH;
     var total = (sc.hours - 1) * pph;
     var xi = function (i) { return i * pph; };
@@ -411,7 +412,7 @@
     svg.setAttribute("viewBox", "0 0 " + w + " " + h);
     var max = d3.max(sc.price) || 1, min = d3.min(sc.price);
     if (max - min < 1e-9) min = max - 1;
-    var x = function (i) { return i / (n - 1) * w; };
+    var x = function (i) { return i / Math.max(1, n - 1) * w; };
     var y = function (v) { return h - 1 - (v - min) / (max - min) * (h - 3); };
     var d = "M0," + h;
     for (var i = 0; i < n; i++) d += "L" + x(i).toFixed(2) + "," + y(sc.price[i]).toFixed(2) + "L" + x(i + 1 < n ? i + 1 : i).toFixed(2) + "," + y(sc.price[i]).toFixed(2);
@@ -573,20 +574,24 @@
   }
 
   // ---------- static sections ----------
+  function controllerName(r) {
+    if (r.supervisor === "scripted") return "the rule-based controller (scripted replies, no model calls)";
+    if (r.supervisor === "hold") return "the no-control actions held through the envelope";
+    return r.model_id;
+  }
   function renderHero() {
     var sc = state.sc, h = sc.headline, r = sc.agent_run;
     var eb = $("eyebrow");
     eb.textContent = "";
     if (sc.agent_sample) eb.appendChild(el("span", "tag sample", "Sample agent"));
-    ["CityLearn 2023 challenge", DATA.buildings.length + " buildings", Math.round(sc.hours / 24) + " days, hourly"].forEach(function (s, i) {
+    ["CityLearn 2023 challenge", DATA.buildings.length + " buildings", (sc.hours < 48 ? sc.hours + " hours" : Math.round(sc.hours / 24) + " days") + ", hourly"].forEach(function (s, i) {
       if (i) eb.appendChild(el("span", "dot"));
       eb.appendChild(el("span", "", s));
     });
     var h1 = $("headline");
     h1.textContent = "";
     h1.appendChild(el("span", h.tone === "loss" ? "tone-loss" : "", (sc.agent_sample ? "Sample: " : "") + h.text + "."));
-    $("lede").textContent = "CityLearn's no-control reference versus " +
-      (r.supervisor === "scripted" ? "scripted replies standing in for " + r.model_id : r.model_id) +
+    $("lede").textContent = "CityLearn's no-control reference versus " + controllerName(r) +
       " deciding every hour for all " + DATA.buildings.length + " buildings: heat pump, hot water tank and battery. " +
       "Every action passed a deterministic safety envelope: " + r.clamped_hours + " hours were clamped and " +
       r.fallback_hours + " fell back to the reference actions. Scores are CityLearn's own KPIs.";
@@ -661,7 +666,7 @@
     t2.appendChild(tb2);
     card2.appendChild(t2);
     var facts = el("div", "facts");
-    [["Model", r.supervisor === "scripted" ? "Scripted, no API" : r.model_id],
+    [["Model", r.supervisor === "scripted" ? "Rule-based, no API" : r.supervisor === "hold" ? "Baseline hold, no API" : r.model_id],
      ["Run cost", "$" + fmt(r.cost_usd, 2) + " / $" + fmt(r.budget_usd, 2)],
      ["Model calls", fmt(r.calls, 0)],
      ["Clamped hours", fmt(r.clamped_hours, 0)],
@@ -686,27 +691,11 @@
   }
 
   // ---------- boot ----------
-  function boot() {
-    // The version comes from assets/version.js, which tests keep equal to the package version.
-    var v = window.HYPERBOLIC_VERSION;
-    if (v && $("app-version")) $("app-version").textContent = "Hyperbolic " + v;
-    setTheme(document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark");
-    $("theme-toggle").addEventListener("click", function () {
-      setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
-    });
-    if (!DATA || !DATA.scenarios || !DATA.scenarios.length || typeof d3 === "undefined") {
-      $("headline").textContent = !DATA || !DATA.scenarios || !DATA.scenarios.length ? "No runs yet" : "Charts could not load";
-      $("lede").textContent = "Run the commands below to record a baseline and an agent run, then rebuild this page's data.";
-      $("stage").hidden = true;
-      document.querySelector(".race").hidden = true;
-      $("play-hero").hidden = true;
-      return;
-    }
-    state.sc = DATA.scenarios[0];
-    state.building = DATA.buildings[0].id;
-    renderHero(); renderScorecard(); renderBuildingChips(); bindScrubber();
-    buildTiles(); buildCounters(); buildScrubber(); drawPriceStrip(); drawCharts();
-    frame(true);
+  var bound = false, tilesBuilt = false;
+  function bindOnce() {
+    if (bound) return;
+    bound = true;
+    bindScrubber();
     $("play").addEventListener("click", function () { setPlaying(!state.playing); });
     $("play-hero").addEventListener("click", function () {
       var go = !state.playing;
@@ -731,13 +720,71 @@
     });
     var lastW = window.innerWidth;
     window.addEventListener("resize", function () {
-      if (Math.abs(window.innerWidth - lastW) < 40) return;
+      if (Math.abs(window.innerWidth - lastW) < 40 || !state.sc) return;
       lastW = window.innerWidth;
       buildScrubber(); drawCharts(); frame(true);
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === " " && e.target === document.body) { setPlaying(!state.playing); e.preventDefault(); }
+      if (e.key === " " && e.target === document.body && state.sc) { setPlaying(!state.playing); e.preventDefault(); }
     });
+  }
+  function showEmpty(title, text) {
+    $("headline").textContent = title;
+    $("lede").textContent = text;
+    $("stage").hidden = true;
+    document.querySelector(".race").hidden = true;
+    $("play-hero").hidden = true;
+  }
+  // follow: jump to the newest hour and let it glow, as a live run does.
+  function renderAll(follow) {
+    state.sc = DATA.scenarios[0];
+    if (!state.building || !DATA.buildings.some(function (b) { return b.id === state.building; })) state.building = DATA.buildings[0].id;
+    $("stage").hidden = false;
+    document.querySelector(".race").hidden = false;
+    $("play-hero").hidden = false;
+    if (follow && state.playing) setPlaying(false);
+    renderHero(); renderScorecard(); renderBuildingChips();
+    if (!tilesBuilt) { buildTiles(); buildCounters(); tilesBuilt = true; }
+    buildScrubber(); drawPriceStrip(); drawCharts();
+    bindOnce();
+    if (follow) {
+      var last = state.sc.hours - 1, changed = last !== state.lastHour;
+      state.t = last;
+      frame(true);
+      if (changed) {
+        var d = state.sc.agent.decisions[last];
+        if (d && d.status !== "ok") {
+          if (d.status === "fallback") pulse($("district-agent"), "fallback");
+          d.clamps.forEach(function (c) { var b = c.point.split(".")[0]; if (tiles.agent[b]) pulse(tiles.agent[b].tile, "clamp"); });
+        }
+      }
+    } else {
+      frame(true);
+    }
+  }
+  window.HyperbolicViewer = {
+    render: function (data, opts) {
+      if (!data || !data.scenarios || !data.scenarios.length || data.scenarios[0].hours < 2 || typeof d3 === "undefined") return false;
+      DATA = data;
+      renderAll(!!(opts && opts.follow));
+      return true;
+    },
+    empty: showEmpty
+  };
+  function boot() {
+    // The version comes from assets/version.js, which tests keep equal to the package version.
+    var v = window.HYPERBOLIC_VERSION;
+    if (v && $("app-version")) $("app-version").textContent = "Hyperbolic " + v;
+    setTheme(document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark");
+    $("theme-toggle").addEventListener("click", function () {
+      setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
+    });
+    if (!DATA || !DATA.scenarios || !DATA.scenarios.length || typeof d3 === "undefined") {
+      showEmpty(!DATA || !DATA.scenarios || !DATA.scenarios.length ? "No runs yet" : "Charts could not load",
+        "Run the commands below to record a baseline and an agent run, then rebuild this page's data.");
+      return;
+    }
+    renderAll(false);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
