@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 (2026-10-21)
+
+Local live mode: watch a run unfold in the browser, hour by hour, on the same viewer as the published replay.
+
+- `python -m hyperbolic serve`: a small server on 127.0.0.1 (default port 8765) that serves the viewer with a live panel and opens the browser; `--no-browser`, `--port`, `--runs-dir`, `--docs`. Standard library only: `http.server` and Server-Sent Events.
+- Controls: duration (24 hours, 1 week, full month or custom), controller (`claude-haiku-5-5`, `claude-sonnet-5-5`, rule-based, baseline), budget with a cost estimate from recorded runs, and Start, Pause, Resume and Stop. One run at a time; the controls lock while it goes.
+- Each finished hour streams to the page: actions, clamps and their reasons, the agent's reason, building states, price, carbon, district draw against the peak target, running KPIs against the baseline over the same hours, and spend. The viewer's tiles, timeline and charts update live, with a scrolling log of reasons.
+- Safety: binds 127.0.0.1 only, answers only Host 127.0.0.1 or localhost, and refuses cross-site requests. The key stays in the server process and never reaches the page, logs or run files. The budget cap is enforced on the server as in the CLI. Without a key the Claude options are off and the rule-based and baseline controllers still work.
+- Every live run is recorded in `runs/` in the `hyperbolic run` format and replays exactly. A stopped run is saved as partial and scored against a baseline stopped at the same hour.
+- When a run finishes the page shows the CityLearn compare table and a Publish button that writes `docs/data` like `hyperbolic compare --pair`, locally only.
+- Shared code, not a copy: `run_session` gained an optional per-hour callback, pause and stop control, and a step limit; `viewer.ScenarioStream` builds the replay viewer's data one hour at a time (tests hold it equal to `build_scenario`); the viewer gained a `render(data)` hook. The published GitHub Pages replay is unchanged.
+- A "baseline" controller (`HoldSupervisor`) runs the no-control actions through the agent path so it records and publishes like any run. Rule-based and baseline runs are always labeled as samples.
+
+
 ## 0.4.0 (2026-10-21)
 
 The 0.3.0 live month beat the baseline on cost but not the rule-based controller, raised emissions and set new peaks. In that run the model charged most at hours 19 to 24: those hours tie for the lowest price, but they are high-carbon and sit on the district's own evening load peak. 16 of 30 days got a higher daily peak, and the month's peak rose 7.5 percent.
