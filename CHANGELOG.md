@@ -14,15 +14,20 @@ The 0.3.0 live month beat the baseline on cost but not the rule-based controller
 
 Full month against the committed baseline:
 
-| CityLearn KPI (district) | Baseline | 0.3.0 rule-based | 0.3.0 live, Haiku | 0.4.0 rule-based |
-|---|---|---|---|---|
-| cost_total | 1.000 | 0.9650 | 0.9728 | 0.9611 |
-| carbon_emissions_total | 1.000 | 1.0029 | 1.0059 | 0.9947 |
-| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.1714 |
-| daily_peak_average | 1.000 | 1.0020 | 1.0544 | 0.9978 |
-| all_time_peak_average | 1.000 | 1.0000 | 1.0753 | 1.0000 |
+| CityLearn KPI (district) | Baseline | 0.3.0 rule-based | 0.3.0 live, Haiku | 0.4.0 rule-based | 0.4.0 live, Haiku |
+|---|---|---|---|---|---|
+| cost_total | 1.000 | 0.9650 | 0.9728 | 0.9611 | 0.9765 |
+| carbon_emissions_total | 1.000 | 1.0029 | 1.0059 | 0.9947 | 0.9974 |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.1714 | 0.1714 |
+| daily_peak_average | 1.000 | 1.0020 | 1.0544 | 0.9978 | 0.9525 |
+| all_time_peak_average | 1.000 | 1.0000 | 1.0753 | 1.0000 | 1.0000 |
+| ramping_average | 1.000 | 1.1776 | 1.1289 | 1.1309 | 0.9965 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9930 | 1.0254 | 0.9913 | 0.9559 |
+| electricity_consumption_total | 1.000 | 1.0128 | 1.0098 | 1.0073 | 1.0098 |
 
-Live 0.4.0 results: TODO.
+Live 0.4.0 run, `claude-haiku-5-5`, full month (719 hours): the first live run to beat the baseline on cost, emissions, daily peak, ramping and load factor at equal comfort. It ties the baseline on the all-time peak, thermal resilience and unserved energy, and draws 1.0 percent more electricity (battery losses). It beats the 0.4.0 rule-based controller on daily peak (0.9525 against 0.9978), ramping and load factor; the rule-based controller still wins on cost (0.9611) and emissions (0.9947). 24 clamped hours, all battery state of charge, one of which also had a peak trim; 0 fallbacks; $0.4720 spent; replay reproduces 719 of 719 hours.
+
+Target for 0.5: cost.
 
 
 ## 0.3.1 (2026-10-21)
