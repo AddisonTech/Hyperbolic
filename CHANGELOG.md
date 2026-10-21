@@ -32,7 +32,23 @@ Results, full month against the committed baseline:
 
 The rule-based check runs the scripted policy through the full action path with no model calls: 0 clamped and 0 fallback hours, and it replays deterministically.
 
-Live 0.3.0 agent results: TODO.
+Live 0.3.0 run, `claude-haiku-5-5`, full month (719 hours):
+
+| CityLearn KPI (district) | Baseline | 0.3.0 rule-based check | 0.3.0 live, Haiku |
+|---|---|---|---|
+| cost_total | 1.000 | 0.9650 | 0.9728 |
+| carbon_emissions_total | 1.000 | 1.0029 | 1.0059 |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 |
+| electricity_consumption_total | 1.000 | 1.0128 | 1.0098 |
+| ramping_average | 1.000 | 1.1776 | 1.1289 |
+| daily_peak_average | 1.000 | 1.0020 | 1.0544 |
+| all_time_peak_average | 1.000 | 1.0000 | 1.0753 |
+
+17 clamped hours (all battery state of charge), 1 fallback hour (a reason over 300 characters), $0.3934 spent, and replay reproduces 719 of 719 hours.
+
+The live agent beat the baseline on cost but not the rule-based controller: cost 0.9728 against 0.9650, and emissions 1.0059 against 1.0029, both above the baseline's 1.000. Comfort was identical to the baseline. Its night charging also raised peaks: the daily peak rose 5.4 percent and the all-time peak 7.5 percent, where the rule-based controller left both within 0.2 percent of the baseline.
+
+Targets for 0.4: emissions and peaks.
 
 ## 0.2.0 (2026-10-21)
 
