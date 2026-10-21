@@ -21,12 +21,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install
-        run: python -m pip install -e ".[dev]"
-      - name: Tests (offline, no BOPTEST, no API key)
+          cache: pip
+      - name: Install CPU torch, CityLearn and Hyperbolic
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-deps CityLearn==3.0.2
+          python -m pip install -e ".[dev]"
+      - name: Tests (offline, CityLearn on the shipped dataset, no API key)
         env:
           HYPERBOLIC_ANTHROPIC_KEY: ""
           TRIAGE_ANTHROPIC_KEY: ""
+          CITYLEARN_OFFLINE: "1"
         run: python -m pytest -q
       - name: Repository rules
         run: python scripts/check_repo.py
