@@ -28,7 +28,31 @@ Estimates before any live run (tuning months first; nothing tuned on the phase 2
 - **The battery change in prompt version 6 is not in any estimate and can only be measured live.**
 - A Haiku month should cost about $0.66; the hard worst case is $0.99, under the $2.00 cap.
 
-Live results: TODO.
+Live run (`claude-haiku-5-5`, full month, 719 hours, prompt version 6), against the baseline, the 0.4.0 rule-based controller (rerun as run 20261022T162847Z, matching its published numbers) and the earlier live months:
+
+| CityLearn KPI (district), full month | Baseline | 0.4.0 rule-based | 0.6.0 live | 0.7.0 live | 0.8.0 live |
+|---|---|---|---|---|---|
+| cost_total | 1.000 | 0.9611 | 0.9219 | 0.9320 | 0.9190 |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9665 | 0.9635 | 0.9610 |
+| electricity_consumption_total | 1.000 | 1.0073 | 0.9740 | 0.9684 | 0.9695 |
+| discomfort_proportion (too cool, too warm) | 0.1714 (0.1538, 0.0176) | 0.1714 (0.1538, 0.0176) | 0.0861 (0.0680, 0.0181) | 0.0741 (0.0560, 0.0181) | 0.0769 (0.0601, 0.0168) |
+| daily_peak_average | 1.000 | 0.9978 | 0.9354 | 0.9393 | 0.9264 |
+| all_time_peak_average | 1.000 | 1.0000 | 0.9483 | 0.9592 | 0.9593 |
+| ramping_average | 1.000 | 1.1309 | 1.0174 | 1.0358 | 1.0076 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9773 | 0.9747 | 0.9651 |
+| power_outage_normalized_unserved_energy_total | 0.6844 | 0.6844 | 0.6844 | 0.6877 | 0.6850 |
+| Clamped hours, fallback hours | | 1, 0 | 73, 0 | 66, 0 | 312, 0 |
+| Model cost | | none | $0.5740 | $0.6329 | $0.5315 |
+
+- **Against the 0.4.0 rule-based controller it wins on every KPI except unserved energy in outages**, where it trails by 0.0006 (0.6850 against 0.6844). Thermal resilience ties at 0.3698.
+- **The first live run with both fewer too-cool and fewer too-warm hours than the baseline** (0.0601 against 0.1538, 0.0168 against 0.0176). 0.6.0 and 0.7.0 live added warm hours (0.0181).
+- **The best live run so far on cost, emissions and the daily peak.** Not on discomfort (0.7.0 live: 0.0741), grid import (0.7.0 live: 0.9684), the all-time peak (0.6.0 live: 0.9483), or ramping and load factor (0.4.0 live, at baseline comfort: 0.9965 and 0.9559).
+- **Missed the 0.8 goal on ramping**: 1.0076, down from 1.0358 and below 0.6.0 live (1.0174) and the 1.0249 estimate, but still above the baseline.
+- **Gave back the all-time peak against 0.6.0 live** (0.9593 against 0.9483). Cost, emissions, discomfort and the daily peak improved on 0.6.0 live.
+- **312 of 719 hours clamped**, 276 by the trim hold alone and 292 with it (243 clamps on Building_1 cooling, 100 on Building_3, 2 on Building_2); comfort in 28 hours, state of charge in 6, deviation in 2, peak in 1. The hold acted 557 times (109 starts, 243 holds, 97 eases, 21 releases, 80 ends, 7 early ends with a reason). The envelope is steering the agent. 0 fallbacks, 719 calls, $0.5315 of $2.00, replays 719 of 719 hours deterministically.
+- The published viewer (`docs/data`) now shows the 0.8.0 live run in place of 0.6.0.
+
+Next for 0.9: cut the clamp rate without losing these gains.
 
 ## 0.7.0 (2026-10-22)
 
