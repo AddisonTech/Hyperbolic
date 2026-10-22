@@ -31,6 +31,7 @@ Changes:
   - A "Run it yourself" section with the local commands, including `hyperbolic serve`, replaces the stale "Replace the sample with a live agent run". The sample banner links to it.
   - It works in both themes and at phone width, with no sideways page scroll; long commands scroll inside their box. The replay and `docs/data` are unchanged.
 - `hyperbolic serve`'s cost estimate uses the version 5 request size. `PeakTracker` reports last hour's district draw and the next hour's load as yesterday.
+- `hyperbolic serve` reads and discards a refused request's body (up to the 10,000 byte limit) before it sends the 403. On Windows, closing with the body unread reset the connection, so the client saw WinError 10054 or 10053 instead of the 403, and `test_refuses_other_hosts_and_cross_site_posts` failed now and then (1 run in 20 before the fix, 0 in 60 after).
 - Tests cover:
   - the v5 strategy's trim hold, slow release, immediate start and release at the setpoint
   - the gentle charge start and the even discharge
@@ -46,16 +47,28 @@ Results, phase 2 local evaluation month (719 hours). The scripted columns are no
 
 | CityLearn KPI (district) | Baseline | 0.4.0 rule-based | 0.6.0 live, Haiku | 0.6.0 v4 strategy, scripted | 0.7.0 v5 strategy, scripted | 0.7.0 live, Haiku |
 |---|---|---|---|---|---|---|
-| cost_total | 1.000 | 0.9611 | 0.9219 | 0.9057 | 0.9015 | TODO |
-| carbon_emissions_total | 1.000 | 0.9947 | 0.9665 | 0.9506 | 0.9430 | TODO |
-| electricity_consumption_total | 1.000 | 1.0073 | 0.9740 | 0.9602 | 0.9523 | TODO |
-| discomfort_proportion | 0.1714 | 0.1714 | 0.0861 | 0.0458 | 0.0424 | TODO |
-| daily_peak_average | 1.000 | 0.9978 | 0.9354 | 0.9193 | 0.9081 | TODO |
-| all_time_peak_average | 1.000 | 1.0000 | 0.9483 | 0.9703 | 0.9597 | TODO |
-| ramping_average | 1.000 | 1.1309 | 1.0174 | 1.0151 | 0.9966 | TODO |
-| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9773 | 0.9661 | 0.9640 | TODO |
+| cost_total | 1.000 | 0.9611 | 0.9219 | 0.9057 | 0.9015 | 0.9320 |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9665 | 0.9506 | 0.9430 | 0.9635 |
+| electricity_consumption_total | 1.000 | 1.0073 | 0.9740 | 0.9602 | 0.9523 | 0.9684 |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.0861 | 0.0458 | 0.0424 | 0.0741 |
+| daily_peak_average | 1.000 | 0.9978 | 0.9354 | 0.9193 | 0.9081 | 0.9393 |
+| all_time_peak_average | 1.000 | 1.0000 | 0.9483 | 0.9703 | 0.9597 | 0.9592 |
+| ramping_average | 1.000 | 1.1309 | 1.0174 | 1.0151 | 0.9966 | 1.0358 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9773 | 0.9661 | 0.9640 | 0.9747 |
 
 The scripted version 5 strategy brings ramping below the baseline (0.9966) and improves on the version 4 strategy on every KPI in the table. Its load factor (0.9640) does not reach the 0.4.0 live run's 0.9559, and like the version 4 strategy its hot discomfort (0.0181) is a little above the baseline's 0.0176. The baseline, the 0.4.0 rule-based controller and the scripted version 4 strategy reproduce their published numbers exactly, and all four runs replay 719 of 719 hours.
+
+Live 0.7.0 run (`claude-haiku-5-5`, full month, 719 hours, prompt version 5) missed the 0.7 goal. Ramping, the target, went up, not down: 1.0358 against 1.0174 for 0.6.0 live. The scripted version 5 strategy reached 0.9966, so the strategy works when it is followed exactly; the live agent did not hold cooling trims the way the prompt asks.
+
+- **Against 0.6.0 live**, it improved emissions (0.9635 against 0.9665), grid import (0.9684 against 0.9740), discomfort (0.0741 against 0.0861: too cool 0.0560 against 0.0680, too warm unchanged at 0.0181) and load factor (0.9747 against 0.9773). Ramping, cost (0.9320 against 0.9219), the daily peak (0.9393 against 0.9354), the all-time peak (0.9592 against 0.9483) and unserved energy in outages got worse.
+- **Outages.** Unserved energy in outages is 0.6877 against the baseline's 0.6844, slightly worse than the baseline: the first run to go past it. Thermal resilience is 0.3698, equal to the baseline.
+- **Against the 0.4.0 rule-based controller**, it still wins on cost (0.9320 against 0.9611), emissions (0.9635 against 0.9947), grid import (0.9684 against 1.0073), discomfort (0.0741 against 0.1714), ramping (1.0358 against 1.1309), daily peak (0.9393 against 0.9978), all-time peak (0.9592 against 1.0000) and load factor (0.9747 against 0.9913).
+- **Trims, counted the same way as the 0.6.0 diagnosis** (cooling more than 0.002 below the baseline action; episodes that ended within the month). 0.7.0 live had 237 trim episodes against 276 in 0.6.0 live and 167 for the scripted v5 strategy. The median length was 2 hours against 1 and 3, with 108 lasting one hour against 160 and 46. 230 ended while the room was occupied, against 263 and 161. The prompt asks to hold a trim until the room is within 0.5 C of its setpoint, then ease it off by at most 0.02 per hour. 142 of the 237 ends broke that: 73 with the room still more than 0.5 C too cold, and 69 dropped more than 0.02 in one hour. The scripted strategy broke it in 4 of 167, all at the edge of the rule. Trims flickered less than in 0.6.0, so they alone do not explain why ramping rose above 0.6.0 live; that rise is not split further here.
+- **Clamps.** 66 clamped hours, 0 fallbacks. By rule: battery state of charge in 51 hours (68 clamps, all charging past 0.95, by a median 0.002), comfort in 12 hours (13 clamps: 10 asked for more cooling than the baseline in a room near the bottom of its band, 3 were rounding under 0.001), cooling more than 0.15 from the baseline in 2 hours (3 clamps), and the peak limiter in 1 hour. No hour had two rules, and the spread check never acted.
+- The run cost $0.6329 of the $2.00 budget and replays 719 of 719 hours deterministically.
+- **The published viewer stays on the 0.6.0 live run.** It is the better live run on cost, ramping, both peaks and outage energy, and the cost saving the page leads with would drop from 7.8 to 6.8 percent. The 0.7.0 viewer data was built locally and not published; `docs/data` is unchanged.
+
+Next for 0.8, a plan only: carry the trim hold state in code. The envelope or the peak tracker keeps each building's trim on until the room is back within 0.5 C of its setpoint and then eases it off by at most 0.02 per hour. The model can end a trim early only with a stated reason, logged and shown in the viewer. This is not the removed ramp rule, which tapered rises; it keeps a trim on, as the scripted strategy does.
 
 
 ## 0.6.0 (2026-10-22)
