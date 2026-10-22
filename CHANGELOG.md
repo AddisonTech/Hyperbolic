@@ -31,16 +31,22 @@ Results, phase 2 local evaluation month (719 hours) against the committed baseli
 
 | CityLearn KPI (district) | Baseline | 0.4.0 rule-based | 0.4.0 live, Haiku | 0.6.0 v4 strategy, scripted | 0.6.0 live, Haiku |
 |---|---|---|---|---|---|
-| cost_total | 1.000 | 0.9611 | 0.9765 | 0.9057 | TODO |
-| carbon_emissions_total | 1.000 | 0.9947 | 0.9974 | 0.9506 | TODO |
-| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.0458 | TODO |
-| daily_peak_average | 1.000 | 0.9978 | 0.9525 | 0.9193 | TODO |
-| all_time_peak_average | 1.000 | 1.0000 | 1.0000 | 0.9703 | TODO |
-| ramping_average | 1.000 | 1.1309 | 0.9965 | 1.0151 | TODO |
-| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9559 | 0.9661 | TODO |
-| electricity_consumption_total | 1.000 | 1.0073 | 1.0098 | 0.9602 | TODO |
+| cost_total | 1.000 | 0.9611 | 0.9765 | 0.9057 | 0.9219 |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9974 | 0.9506 | 0.9665 |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.0458 | 0.0861 |
+| daily_peak_average | 1.000 | 0.9978 | 0.9525 | 0.9193 | 0.9354 |
+| all_time_peak_average | 1.000 | 1.0000 | 1.0000 | 0.9703 | 0.9483 |
+| ramping_average | 1.000 | 1.1309 | 0.9965 | 1.0151 | 1.0174 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9559 | 0.9661 | 0.9773 |
+| electricity_consumption_total | 1.000 | 1.0073 | 1.0098 | 0.9602 | 0.9740 |
 
 The baseline and the 0.4.0 rule-based controller reproduce their 0.4.0 numbers exactly in this release.
+
+Live 0.6.0 run (`claude-haiku-5-5`, full month, 719 hours, prompt version 4) beats the 0.4.0 rule-based controller on cost (0.9219 against 0.9611), emissions (0.9665 against 0.9947), grid import (0.9740 against 1.0073), discomfort (0.0861 against 0.1714), ramping (1.0174 against 1.1309), daily peak (0.9354 against 0.9978), all-time peak (0.9483 against 1.0000) and load factor (0.9773 against 0.9913). The rule-based numbers were rerun on the same machine and match 0.4.0 exactly. Against the baseline it wins on everything except ramping, 1.7 percent worse (1.0174), and hot discomfort, 0.0181 of occupied hours against 0.0176: trimming cooling in cold rooms halved the cold hours (0.0680 against 0.1538) and added a few warm ones. Thermal resilience (0.3698) and unserved energy in outages (0.6844) tie the baseline.
+
+It trails the scripted version 4 strategy, which follows the same prompt literally (cost 0.9057, emissions 0.9506, discomfort 0.0458), and the 0.4.0 live run still has the better ramping (0.9965) and load factor (0.9559); the 0.6.0 run has the better daily peak (0.9354 against 0.9525).
+
+73 clamped hours, 0 fallbacks. By rule: battery state of charge in 54 hours (73 clamps), cooling more than 0.15 from the baseline in 14 hours (16 clamps), the comfort rule holding cooling at the baseline in 6 hours (6 clamps), and one battery rate limit; 3 hours had two rules. The spread check and the peak limiter never had to act. The run cost $0.5740 of the $2.00 budget and replays 719 of 719 hours deterministically.
 
 
 ## 0.5.0 (2026-10-21)

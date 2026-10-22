@@ -6,7 +6,7 @@ An AI supervisor that runs a simulated district and tries to beat the no-control
 
 Hyperbolic runs [CityLearn](https://github.com/citylearn-project/CityLearn), an open source district energy simulator, entirely on one machine. Every simulated hour it reads CityLearn's observations, forecasts and prices for all buildings, asks a language model for one action per device, passes the answer through a deterministic safety envelope, and applies what survives. Both the agent and the reference are scored by CityLearn's own KPI evaluation, so the numbers come from the benchmark, not from this project.
 
-Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.4.0 Haiku run (see [Results](#results)).
+Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.6.0 Haiku run (see [Results](#results)).
 
 To watch a run live on your own machine instead, see [Watch it live](#watch-it-live).
 
@@ -149,20 +149,24 @@ The batteries hold 8.5 kWh above their floor and the district draws 14.2 kWh in 
 
 | CityLearn KPI (district), full month | Baseline | 0.4.0 rule-based | 0.4.0 live, Haiku | 0.6.0 v4 strategy, scripted | 0.6.0 live, Haiku |
 |---|---|---|---|---|---|
-| cost_total | 1.000 | 0.9611 | 0.9765 | 0.9057 | TODO |
-| carbon_emissions_total | 1.000 | 0.9947 | 0.9974 | 0.9506 | TODO |
-| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.0458 | TODO |
-| daily_peak_average | 1.000 | 0.9978 | 0.9525 | 0.9193 | TODO |
-| all_time_peak_average | 1.000 | 1.0000 | 1.0000 | 0.9703 | TODO |
-| ramping_average | 1.000 | 1.1309 | 0.9965 | 1.0151 | TODO |
-| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9559 | 0.9661 | TODO |
-| electricity_consumption_total | 1.000 | 1.0073 | 1.0098 | 0.9602 | TODO |
-| Clamped hours, fallback hours | | 1, 0 | 24, 0 | 1, 0 | TODO |
-| Model cost | | none | $0.4720 | none | TODO |
+| cost_total | 1.000 | 0.9611 | 0.9765 | 0.9057 | 0.9219 |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9974 | 0.9506 | 0.9665 |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.0458 | 0.0861 |
+| daily_peak_average | 1.000 | 0.9978 | 0.9525 | 0.9193 | 0.9354 |
+| all_time_peak_average | 1.000 | 1.0000 | 1.0000 | 0.9703 | 0.9483 |
+| ramping_average | 1.000 | 1.1309 | 0.9965 | 1.0151 | 1.0174 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9559 | 0.9661 | 0.9773 |
+| electricity_consumption_total | 1.000 | 1.0073 | 1.0098 | 0.9602 | 0.9740 |
+| Clamped hours, fallback hours | | 1, 0 | 24, 0 | 1, 0 | 73, 0 |
+| Model cost | | none | $0.4720 | none | $0.5740 |
 
 The "v4 strategy, scripted" column is `hyperbolic run --scripted --prompt-version 4`: the version 4 prompt's strategy executed literally by `strategy_plan_v4`, with no model, run once on this month after its numbers were chosen on the tuning set. It is evidence that the strategy the agent is given beats the rule-based controller on cost, emissions, comfort and both peaks, not a model result. It does not reach the live 0.4.0 agent's ramping or load factor, and its ramping sits 1.5 percent above the baseline. On the tuning months it scored ramping 0.9953 and load factor 0.9529.
 
-**Live results: TODO** after the 0.6.0 live Haiku month.
+**The 0.6.0 live run (`claude-haiku-5-5`, full month, 719 hours, prompt version 4)** beats the 0.4.0 rule-based controller on cost (0.9219 against 0.9611), emissions (0.9665 against 0.9947), grid import (0.9740 against 1.0073), discomfort (0.0861 against 0.1714), ramping (1.0174 against 1.1309), daily peak (0.9354 against 0.9978), all-time peak (0.9483 against 1.0000) and load factor (0.9773 against 0.9913). The rule-based numbers were rerun on the same machine and match 0.4.0 exactly. Against the baseline it wins on everything except ramping, 1.7 percent worse (1.0174), and hot discomfort, 0.0181 of occupied hours against 0.0176: trimming cooling in cold rooms halved the cold hours (0.0680 against 0.1538) and added a few warm ones. Thermal resilience (0.3698) and unserved energy in outages (0.6844) tie the baseline.
+
+It trails the scripted version 4 strategy, which follows the same prompt literally (cost 0.9057, emissions 0.9506, discomfort 0.0458), and the 0.4.0 live run still has the better ramping (0.9965) and load factor (0.9559); the 0.6.0 run has the better daily peak (0.9354 against 0.9525).
+
+73 clamped hours, 0 fallbacks. By rule: battery state of charge in 54 hours (73 clamps), cooling more than 0.15 from the baseline in 14 hours (16 clamps), the comfort rule holding cooling at the baseline in 6 hours (6 clamps), and one battery rate limit; 3 hours had two rules. The spread check and the peak limiter never had to act. The run cost $0.5740 of the $2.00 budget and replays 719 of 719 hours deterministically.
 
 ## What the agent sees
 
@@ -218,7 +222,7 @@ The baseline action under active control is storage idle and the heat pump at th
 - Key from `HYPERBOLIC_ANTHROPIC_KEY`, falling back to `TRIAGE_ANTHROPIC_KEY`. The key lives only in the environment, never in a file, log or run folder (a test checks this).
 - Model: `--model haiku` (default, `claude-haiku-5-5`) or `--model sonnet` (`claude-sonnet-5-5`). Structured JSON output, low effort, 2000 max tokens.
 - Hard budget per run, `--budget` (default 2.00 USD). Before every call the runner computes that call's worst case (prompt size plus full max tokens). If it could push spending past the budget, model calls stop for the rest of the run and every remaining hour uses the baseline action.
-- Episode length: the full 719 hours. The 0.2.0 live run averaged about 4,700 characters per request and cost 0.23 USD on Haiku. Prompt version 2 adds the 24 hour outlook and the strategy, about 7,400 characters per request, and the 0.3.0 live Haiku month cost 0.39 USD. Prompt version 3 is about 8,600 characters per request; the 0.4.0 live Haiku month cost 0.47 USD, against a hard worst case of about 0.93 USD. Prompt version 4 adds the reference action, the price plan and the battery limits, about 9,650 characters per request: a Haiku month should cost about 0.53 USD, against a hard worst case of about 0.95 USD and the default 2.00 USD budget. Sonnet costs 20 times as much per token: a full Sonnet month should cost roughly 10 to 11 USD, so under a 2.00 USD budget it stops calling the model after about a fifth of the month and the remaining hours use the baseline action. Raise `--budget` (about 12 USD) for a full Sonnet run. Each run logs its exact token cost in `result.json`.
+- Episode length: the full 719 hours. The 0.2.0 live run averaged about 4,700 characters per request and cost 0.23 USD on Haiku. Prompt version 2 adds the 24 hour outlook and the strategy, about 7,400 characters per request, and the 0.3.0 live Haiku month cost 0.39 USD. Prompt version 3 is about 8,600 characters per request; the 0.4.0 live Haiku month cost 0.47 USD, against a hard worst case of about 0.93 USD. Prompt version 4 adds the reference action, the price plan and the battery limits, about 9,650 characters per request: the 0.6.0 live Haiku month cost 0.57 USD, against a hard worst case of about 0.95 USD and the default 2.00 USD budget. Sonnet costs 20 times as much per token: a full Sonnet month should cost roughly 10 to 11 USD, so under a 2.00 USD budget it stops calling the model after about a fifth of the month and the remaining hours use the baseline action. Raise `--budget` (about 12 USD) for a full Sonnet run. Each run logs its exact token cost in `result.json`.
 
 ## How to run it
 
@@ -300,7 +304,7 @@ CI (GitHub Actions) runs the tests on Python 3.10 and 3.12 with CPU-only torch, 
 ## Honest limits
 
 - **Simulator only.** CityLearn models buildings with data-driven load profiles and an LSTM for indoor temperature. Beating its reference is evidence worth investigating, not proof of field savings.
-- **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. From 0.6.0 it is frozen at its 0.4.0 settings so the bar does not move.
+- **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. In 0.6.0 it beat it on every one of those. From 0.6.0 the rule-based check is frozen at its 0.4.0 settings so the bar does not move.
 - **The scripted version 4 strategy is not a model result either.** It shows that the strategy the agent is given beats the rule-based controller when followed literally. A live model reads the same strategy and may follow it more or less closely.
 - **The peak limiter uses this hour's load.** It reads the draw CityLearn is about to simulate for this hour (plug load, solar, hot water demand, cooling), the equivalent of a meter reading in a real building. The forecast of the day's peak is built only from past days. The agent itself sees only the same values the limiter uses, never the rest of the day.
 - **Tuned on one other dataset.** From 0.6.0 the strategy's numbers come from three summer months of the CityLearn 2023 online evaluation set: other weather, loads, carbon and tariff, but the same three buildings and LSTM models, so it says nothing about other building types. The 0.4.0 rule-based controller still carries settings chosen on the first week of the reported month.
