@@ -78,3 +78,45 @@ def test_changed_envelope_config_is_detected(fixture_runs, tmp_path):
     rep = replay_run(copy)
     assert not rep.deterministic
     assert "request differs" in rep.error and 0 in rep.mismatched_steps
+
+
+def _record_v4(run_dir):
+    from fakes import FakeDistrict
+
+    from hyperbolic.envelope import Envelope, EnvelopeConfig
+    from hyperbolic.model import Budget, ScriptedSupervisor
+    from hyperbolic.runner import AgentController, RunWriter, run_session
+
+    ctl = AgentController(ScriptedSupervisor(tokens=(2800, 200)), Envelope(EnvelopeConfig()), Budget(2.0),
+                          prompt_version=4)
+    run_session(FakeDistrict(), ctl, RunWriter(run_dir), hours=48, log=lambda *_: None)
+
+
+def test_recorded_v4_run_with_the_reference_and_spread_check_replays_identically(tmp_path):
+    run = tmp_path / "v4"
+    _record_v4(run)
+    steps = load_jsonl(run / "steps.jsonl")
+    rules = {c["rule"] for s in steps for c in s["decision"]["clamps"]}
+    calls = load_jsonl(run / "calls.jsonl")
+    assert '"reference_action"' in calls[0]["request"]["messages"][0]["content"]
+    rep = replay_run(run)
+    assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == 48, (rep.mismatched_steps, rep.error)
+    replay_run(run, out_dir=tmp_path / "again")
+    assert (tmp_path / "again" / "steps.jsonl").read_bytes() == (run / "steps.jsonl").read_bytes()
+    assert rules <= {"spread", "peak", "soc", "rate", "deviation", "comfort"}
+
+
+def test_a_changed_reference_policy_is_detected(tmp_path, monkeypatch):
+    import hyperbolic.model as m
+    from hyperbolic.model import RuleParams
+
+    run = tmp_path / "v4"
+    _record_v4(run)
+    # The reference action is part of every recorded request, so a different rule-based plan
+    # cannot replay silently.
+    original = m.rule_plan_v3
+    monkeypatch.setattr("hyperbolic.prompt.rule_plan_v3",
+                        lambda obs, p=None: original(obs, RuleParams(charge_rate=0.05, charge_rank=1.0,
+                                                                     charge_max_signal=1.0)))
+    rep = replay_run(run)
+    assert not rep.deterministic and "request differs" in rep.error

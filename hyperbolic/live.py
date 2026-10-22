@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from . import district as dc
-from .envelope import Envelope, EnvelopeConfig
+from .envelope import Envelope
 from .model import (
     DEFAULT_BUDGET_USD,
     KEY_ENV_VARS,
@@ -49,6 +49,7 @@ from .runner import (
     BaselineController,
     RunWriter,
     context_from_state,
+    controller_settings,
     load_jsonl,
     new_run_dir,
     run_session,
@@ -73,8 +74,8 @@ DURATIONS = [
     {"id": "week", "label": "1 week (167 hours)", "hours": 167},
     {"id": "month", "label": "Full month (719 hours)", "hours": dc.EPISODE_HOURS},
 ]
-# Typical prompt version 3 request and reply, for a cost estimate before any run is recorded.
-TYPICAL_TOKENS = (2500, 250)
+# Typical prompt version 4 request and reply, for a cost estimate before any run is recorded.
+TYPICAL_TOKENS = (2800, 250)
 
 
 def key_status(env: dict[str, str] | None = None) -> dict:
@@ -354,8 +355,9 @@ class LiveHub:
             self.emit("status", {"state": "baseline", "hours": run.hours})
             run.baseline_dir, base_steps = self._baseline(run)
             supervisor = self.supervisor_factory(run.controller)
-            ctl = AgentController(supervisor=supervisor, envelope=Envelope(EnvelopeConfig()),
-                                  budget=Budget(limit_usd=run.budget_usd))
+            prompt_version, envelope_cfg = controller_settings(run.controller == "rule")
+            ctl = AgentController(supervisor=supervisor, envelope=Envelope(envelope_cfg),
+                                  budget=Budget(limit_usd=run.budget_usd), prompt_version=prompt_version)
             run.agent_dir = _unique(new_run_dir(self.runs_dir, "agent", "citylearn"))
             buildings = list(base_steps[0]["outcome"]) if base_steps else []
             stream = ScenarioStream(buildings)

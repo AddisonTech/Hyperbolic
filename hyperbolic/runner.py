@@ -30,7 +30,22 @@ from .model import (
     worst_case_cost_usd,
 )
 from .prompt import PROMPT_VERSION, Lookahead, build_request, observe
-from .signals import PeakInfo, PeakTracker
+from .signals import PeakInfo, PeakTracker, PriceOutlook
+
+
+# The rule-based controller is the 0.4.0 reference, kept frozen so its result reproduces: prompt
+# version 3 and the 0.4.0 envelope. Prompt version 4 shows its plan to the model each hour.
+RULE_PROMPT_VERSION = 3
+
+
+def controller_settings(rule_based: bool, prompt_version: int | None = None) -> tuple[int, EnvelopeConfig]:
+    """Prompt version and envelope rules for a new run. Without a prompt version, models get the
+    current one and the rule-based controller the 0.4.0 one, each with its own envelope."""
+    if prompt_version is None:
+        prompt_version = RULE_PROMPT_VERSION if rule_based else PROMPT_VERSION
+    if rule_based and prompt_version <= RULE_PROMPT_VERSION:
+        return prompt_version, EnvelopeConfig.v040()
+    return prompt_version, EnvelopeConfig()
 
 
 class Simulator(Protocol):
@@ -52,10 +67,11 @@ def _opt(s: dict, key: str) -> float | None:
     return None if s.get(key) is None else float(s[key])
 
 
-def context_from_state(state: dict, peak: PeakInfo | None = None) -> StepContext:
+def context_from_state(state: dict, peak: PeakInfo | None = None, prices: PriceOutlook | None = None) -> StepContext:
     return StepContext(
         time_step=int(state["time_step"]),
         peak=peak,
+        prices=prices,
         buildings={
             b: BuildingState(
                 indoor_c=float(s["indoor_c"]),
@@ -70,6 +86,8 @@ def context_from_state(state: dict, peak: PeakInfo | None = None) -> StepContext
                 battery_capacity_kwh=_opt(s, "battery_capacity_kwh"),
                 dhw_capacity_kwh=_opt(s, "dhw_capacity_kwh"),
                 dhw_heater_efficiency=_opt(s, "dhw_heater_efficiency"),
+                battery_round_trip_min=_opt(s, "battery_round_trip_min"),
+                battery_loss_per_hour=_opt(s, "battery_loss_per_hour"),
             )
             for b, s in state["buildings"].items()
         },
@@ -167,9 +185,11 @@ class AgentController:
         if self.peaks is None:
             self.peaks = PeakTracker(self.envelope.config.peak_forecast_days)
         self.peaks.update(state)
-        ctx = context_from_state(state, self.peaks.info(int(state["time_step"])))
-        buildings = tuple(state["buildings"])
         self.lookahead.update(state)
+        t = int(state["time_step"])
+        prices = PriceOutlook(float(state["shared"]["price_forecast"][0]), tuple(self.lookahead.outlook(t)["price"]))
+        ctx = context_from_state(state, self.peaks.info(t), prices)
+        buildings = tuple(state["buildings"])
         obs = observe(self.prompt_version, state, ctx, self.last, self.lookahead, self.envelope)
         request = build_request(obs, self.envelope.config, buildings, self.supervisor.model_key,
                                 self.max_tokens, self.effort, self.prompt_version)

@@ -6,12 +6,16 @@ For each building and device the checks run in this order:
   3. rate limit per step, measured from last hour's action or from this hour's
      baseline action, whichever is closer
   4. state of charge limits for the battery and the hot water tank
-  5. cooling deviation: at most cooling_max_deviation away from the ideal-load fraction
-  6. comfort: in occupied hours near the edge of CityLearn's comfort band the heat
+  5. price spread (0.6.0): no grid charging of a battery when no price in the next
+     24 hours, after the battery's worst round trip efficiency and its standing losses
+     until then, is worth more than the price now and a cheaper hour is coming; spare
+     solar may still be stored
+  6. cooling deviation: at most cooling_max_deviation away from the ideal-load fraction
+  7. comfort: in occupied hours near the edge of CityLearn's comfort band the heat
      pump may not cool less (too warm) or more (too cool) than the baseline action,
      and with overcool_guard_unoccupied no extra cooling when already cool at night
 Then, across the district:
-  7. peak limit: storage charging is trimmed so the district's load this hour stays at
+  8. peak limit: storage charging is trimmed so the district's load this hour stays at
      or below the peak target (signals.peak_target_kwh), battery first, then the tank
 A null action, or any invalid reply, uses the baseline action for that device.
 Every clamp and fallback is returned with a reason so the runner can log it.
@@ -28,7 +32,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
 from . import district as dc
-from .signals import PeakInfo, peak_target_kwh
+from .signals import PeakInfo, PriceOutlook, charge_spread, peak_target_kwh
 
 DEVICE_KEYS = tuple(dc.DEVICES.values())  # cooling, dhw, battery
 
@@ -125,6 +129,10 @@ class EnvelopeConfig:
     peak_limit: bool = True
     peak_target_fraction: float = 1.0  # picked on the tuning week by scripts/tune_rules.py
     peak_forecast_days: int = dc.PEAK_FORECAST_DAYS
+    # Added in 0.6.0. Block grid charging of a battery when the price outlook cannot pay back
+    # its round trip and standing losses and a cheaper hour is coming (signals.charge_spread).
+    # Physical, not fitted: the efficiency and loss come from the battery itself.
+    spread_check: bool = True
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -133,8 +141,15 @@ class EnvelopeConfig:
     def from_manifest(cls, data: dict | None) -> "EnvelopeConfig":
         """Rebuild the config a run used. Fields a run did not record keep the behavior
         they had before they existed, so older runs replay exactly."""
-        legacy = {"cooling_max_deviation": None, "overcool_guard_unoccupied": False, "peak_limit": False}
+        legacy = {"cooling_max_deviation": None, "overcool_guard_unoccupied": False, "peak_limit": False,
+                  "spread_check": False}
         return cls(**{**legacy, **(data or {})})
+
+    @classmethod
+    def v040(cls) -> "EnvelopeConfig":
+        """The 0.4.0 rule set: everything before the spread check. The rule-based reference
+        controller runs with it so its 0.4.0 result reproduces exactly."""
+        return cls(spread_check=False)
 
     def rate(self, device: str) -> float:
         return {"cooling": self.cooling_rate_per_step, "dhw": self.dhw_rate_per_step,
@@ -158,6 +173,9 @@ class BuildingState:
     battery_capacity_kwh: float | None = None
     dhw_capacity_kwh: float | None = None
     dhw_heater_efficiency: float | None = None
+    # Added in 0.6.0 for the spread check.
+    battery_round_trip_min: float | None = None
+    battery_loss_per_hour: float | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +183,7 @@ class StepContext:
     time_step: int
     buildings: dict[str, BuildingState]
     peak: PeakInfo | None = None
+    prices: PriceOutlook | None = None  # added in 0.6.0
 
 
 @dataclass
@@ -241,7 +260,7 @@ class Envelope:
             req = proposal["buildings"].get(b, {})
             actions[b] = {}
             for d in DEVICE_KEYS:
-                v = self._limit(b, d, req.get(d), st, clamps)
+                v = self._limit(b, d, req.get(d), st, clamps, ctx.prices)
                 actions[b][d] = v
                 memory[f"{b}.{d}"] = st.baseline[d] if v is None else v
         if self.config.peak_limit:
@@ -306,7 +325,30 @@ class Envelope:
             if total <= target + 1e-9:
                 return
 
-    def _limit(self, b: str, d: str, requested: float | None, st: BuildingState, clamps: list[Clamp]):
+    @staticmethod
+    def _limit_spread(point: str, v: float, st: BuildingState, prices: PriceOutlook | None,
+                      clamps: list[Clamp]) -> float:
+        """Grid charging must be able to pay for itself: blocked when no price ahead, after the
+        battery's round trip and standing losses, is worth more than the price now while a
+        cheaper hour is coming. Spare solar, which would be exported for nothing, may always
+        be stored."""
+        if prices is None or st.battery_round_trip_min is None or not st.battery_capacity_kwh:
+            return v
+        spread = charge_spread(prices, st.battery_round_trip_min, st.battery_loss_per_hour or 0.0)
+        if spread is None or not spread.blocked:
+            return v
+        solar = max(0.0, -(st.load_kwh or 0.0)) / st.battery_capacity_kwh
+        nv = min(v, math.floor(solar * 1e4) / 1e4)
+        if nv >= v - 1e-9:
+            return v
+        why = (f"price {prices.now:.4f} now, best ahead {spread.best_price:.4f} in {spread.best_hours_ahead} h "
+               f"does not cover {(1.0 - spread.keep) * 100.0:.0f}% round trip and standing losses and a cheaper "
+               f"hour comes in {spread.cheaper_hours_ahead} h, grid charging blocked")
+        clamps.append(Clamp(point, "spread", v, nv, why + (", spare solar still stored" if nv > 0 else "")))
+        return nv
+
+    def _limit(self, b: str, d: str, requested: float | None, st: BuildingState, clamps: list[Clamp],
+               prices: PriceOutlook | None = None):
         if requested is None:
             return None
         cfg = self.config
@@ -343,6 +385,8 @@ class Envelope:
                 clamps.append(Clamp(point, "soc", v, s_hi,
                                     f"charge would take charge from {soc:.2f} above {cfg.soc_max:g}"))
                 v = s_hi
+        if d == "battery" and cfg.spread_check and v > 1e-9:
+            v = self._limit_spread(point, v, st, prices, clamps)
         if d == "cooling" and cfg.cooling_max_deviation is not None and abs(v - base) > cfg.cooling_max_deviation + 1e-9:
             nv = base + math.copysign(cfg.cooling_max_deviation, v - base)
             clamps.append(Clamp(point, "deviation", v, nv,

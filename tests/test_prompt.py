@@ -18,7 +18,7 @@ from hyperbolic.prompt import (
     observe,
     system_prompt_v2,
 )
-from hyperbolic.runner import AgentController, NullWriter, context_from_state, run_session
+from hyperbolic.runner import AgentController, NullWriter, context_from_state, controller_settings, run_session
 
 
 def fake_states(n):
@@ -31,9 +31,14 @@ def fake_states(n):
     return out
 
 
-def test_default_prompt_is_version_3():
-    assert PROMPT_VERSION == 3
-    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 3
+def test_default_prompt_is_version_4_and_the_rule_based_controller_stays_on_3():
+    assert PROMPT_VERSION == 4
+    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 4
+    # The rule-based controller is the frozen 0.4.0 reference: prompt version 3, no spread check.
+    assert controller_settings(True) == (3, EnvelopeConfig.v040())
+    assert controller_settings(False) == (4, EnvelopeConfig())
+    assert controller_settings(True, 4) == (4, EnvelopeConfig())
+    assert EnvelopeConfig.v040().spread_check is False and EnvelopeConfig().spread_check is True
 
 
 def test_lookahead_places_forecasts_at_their_real_horizons():
@@ -112,17 +117,24 @@ def test_v2_prompt_states_the_strategy_and_the_rules():
 def test_request_carries_the_observation_for_each_version():
     st = fake_states(1)[0]
     ctx = context_from_state(st)
-    for version in (1, 2, 3):
+    for version in (1, 2, 3, 4):
         obs = observe(version, st, ctx, None, Lookahead())
         req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=version)
         assert observation_from_request(req) == json.loads(json.dumps(obs))
     with pytest.raises(ValueError):
-        observe(4, st, ctx, None, Lookahead())
+        observe(5, st, ctx, None, Lookahead())
 
 
-def test_rule_policy_charges_cheap_and_discharges_into_the_peak():
-    # Fake district: price 0.05 most of the day and 0.25 from hour 16 to 20.
-    ctl = AgentController(ScriptedSupervisor(), Envelope(EnvelopeConfig()), Budget(1.0))
+@pytest.mark.parametrize("rule_based", [True, False])
+def test_rule_policy_charges_cheap_and_discharges_into_the_peak(rule_based):
+    # Fake district: price 0.05 most of the day and 0.25 from hour 16 to 20. rule_based runs the
+    # 0.4.0 rule on prompt version 3; otherwise the version 4 strategy runs on version 4, without
+    # peak shaving, which the fake's flat daytime load would trigger all day.
+    from hyperbolic.model import StrategyParams
+
+    version, cfg = controller_settings(rule_based)
+    sup = ScriptedSupervisor(strategy=StrategyParams(shave=0.0))
+    ctl = AgentController(sup, Envelope(cfg), Budget(1.0), prompt_version=version)
     w = NullWriter()
     run_session(FakeDistrict(), ctl, w, hours=48, log=lambda *_: None)
     by_hour = {}
@@ -130,6 +142,7 @@ def test_rule_policy_charges_cheap_and_discharges_into_the_peak():
         by_hour[s["state"]["time_step"] % 24] = s["actions"]["Building_1"]["battery"]
     assert any(by_hour[h] < 0 for h in range(16, 21))
     assert all(by_hour[h] <= 0 for h in range(16, 21))
+    assert any(by_hour[h] > 0 for h in range(0, 16))
     assert all(s["decision"]["status"] != "fallback" for s in w.steps)
 
 
@@ -190,3 +203,79 @@ def test_v3_prompt_orders_the_goals_and_limits_the_reason():
     assert "headroom_kwh" in text and "spread it" in text and "use the signal, not" in text
     assert chr(0x2014) not in text
     assert "peak.target_kwh" not in system_prompt_v3(EnvelopeConfig(peak_limit=False), ("Building_1",))
+
+
+def _v4_context(n=27):
+    from hyperbolic.signals import PeakTracker, PriceOutlook
+
+    states = fake_states(n + 3)
+    look, peaks = Lookahead(), PeakTracker()
+    for st in states[:n]:
+        look.update(st)
+        peaks.update(st)
+    st = states[n - 1]
+    t = st["time_step"]
+    prices = PriceOutlook(st["shared"]["price_forecast"][0], tuple(look.outlook(t)["price"]))
+    return st, context_from_state(st, peaks.info(t), prices), look
+
+
+def test_v4_observation_carries_the_rule_based_reference_action():
+    from hyperbolic.model import rule_plan_v3
+
+    st, ctx, look = _v4_context()
+    env = Envelope(EnvelopeConfig())
+    obs = observe(4, st, ctx, None, look, env)
+    v3 = observe(3, st, ctx, None, look, env)
+    ref = rule_plan_v3(v3)
+    # The reference is exactly what the rule-based controller replies to the same hour.
+    rule_req = build_request(v3, EnvelopeConfig.v040(), tuple(st["buildings"]), "haiku", prompt_version=3)
+    assert json.loads(ScriptedSupervisor().call(0, rule_req).text) == ref
+    for b in st["buildings"]:
+        assert obs["buildings"][b]["reference_action"] == ref[b]
+    assert obs["reference_reason"] == ref["reason"]
+    req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=4)
+    sent = observation_from_request(req)
+    assert sent["buildings"]["Building_1"]["reference_action"] == ref["Building_1"]
+    assert "reference_action" in req["system"] and "reference_reason" in req["system"]
+    # Version 4 only adds to version 3.
+    assert all(obs[k] == v for k, v in v3.items() if k != "buildings")
+    for b, s in v3["buildings"].items():
+        assert all(obs["buildings"][b][k] == v for k, v in s.items() if k != "battery")
+        assert set(s["battery"]) < set(obs["buildings"][b]["battery"])
+
+
+def test_v4_observation_has_the_price_plan_and_the_battery_limits():
+    st, ctx, look = _v4_context()  # hour 3 of day two in the fake district: cheap, top price at 16 to 20
+    obs = observe(4, st, ctx, None, look, Envelope(EnvelopeConfig()))
+    pp = obs["price_plan"]
+    assert pp["now"] == 0.05 and pp["top_24h"] == 0.25 and pp["low_24h"] == 0.05
+    assert not pp["top_price_now"] and not pp["flat_24h"]
+    ahead = look.outlook(st["time_step"])["price"]
+    assert pp["top_price_hours_ahead"] and all(ahead[j - 1] == 0.25 for j in pp["top_price_hours_ahead"])
+    b = obs["buildings"]["Building_1"]
+    assert b["battery"]["soc_floor"] == 0.2 and b["battery"]["usable_kwh"] == 1.2
+    assert b["battery"]["round_trip_min"] == 0.88 and b["battery"]["grid_charging_ok"] is True
+    assert b["indoor_vs_setpoint_c"] == round(st["buildings"]["Building_1"]["indoor_c"] - 24.0, 2)
+    # At the top price, with cheaper hours coming, grid charging is not ok.
+    st, ctx, look = _v4_context(24 + 17)
+    obs = observe(4, st, ctx, None, look, Envelope(EnvelopeConfig()))
+    assert obs["price_plan"]["top_price_now"] is True
+    assert obs["buildings"]["Building_1"]["battery"]["grid_charging_ok"] is False
+    # Without the spread check there is no verdict to show.
+    off = observe(4, st, ctx, None, look, Envelope(EnvelopeConfig.v040()))
+    assert off["buildings"]["Building_1"]["battery"]["grid_charging_ok"] is None
+
+
+def test_v4_prompt_puts_price_first_and_names_the_reference():
+    from hyperbolic.prompt import system_prompt_v4
+
+    text = system_prompt_v4(EnvelopeConfig(), ("Building_1",))
+    order = [text.index(s) for s in ("1. Comfort:", "2. Peaks:", "3. Cost first, then carbon:")]
+    assert order == sorted(order)
+    for phrase in ("reference_action", "top_price_now", "grid_charging_ok", "soc_floor", "indoor_vs_setpoint_c",
+                   "Hold the battery for the top-price hours", "flat_24h", "cut its cooling", "keep district load"):
+        assert phrase in text
+    assert f"at most {dc.REASON_TARGET_CHARS} characters" in text
+    assert chr(0x2014) not in text
+    assert "grid_charging_ok is false" in text
+    assert "grid_charging_ok is false" not in system_prompt_v4(EnvelopeConfig.v040(), ("Building_1",))

@@ -12,7 +12,9 @@ so the bar it sets is a fair one for the agent.
 
 0.4.0 searches the version 3 policy (RuleParams) together with the two peak limiter
 settings in EnvelopeConfig. The 0.3.0 search for the version 2 policy is in the git
-history; its result is kept in RuleParamsV2.
+history; its result is kept in RuleParamsV2. From 0.6.0 this controller is the frozen
+rule-based reference, and the prompt version 4 strategy is tuned on a separate dataset
+by scripts/tune_strategy.py.
 
 A candidate qualifies when, on the tuning week, discomfort is no more than half a point
 above the baseline and the daily and all-time peaks are at or below the baseline's. The
@@ -84,8 +86,10 @@ def kpis(controller, control: bool, hours: int) -> dict:
 
 
 def agent(candidate: dict) -> AgentController:
+    # The 0.4.0 search: prompt version 3 and the envelope before the 0.6.0 spread check.
     return AgentController(supervisor=ScriptedSupervisor(params=RuleParams(**candidate["rule"])),
-                           envelope=Envelope(EnvelopeConfig(**candidate["envelope"])), budget=Budget(limit_usd=1.0))
+                           envelope=Envelope(EnvelopeConfig(**{"spread_check": False, **candidate["envelope"]})),
+                           budget=Budget(limit_usd=1.0), prompt_version=3)
 
 
 def agent_kpis(candidate: dict, hours: int) -> dict:

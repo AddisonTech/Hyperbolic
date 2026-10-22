@@ -47,6 +47,7 @@ class FakeDistrict:
                 "battery_soc": self.soc[b], "dhw_soc": self.dhw[b], "grid_kwh": 0.5, "power_outage": False,
                 "battery_capacity_kwh": 4.0, "battery_power_kw": 3.32, "dhw_capacity_kwh": 2.0,
                 "cooling_power_kw": 4.0, "dhw_heater_efficiency": 0.9, "load_kwh": 0.6 if h < 8 else 1.2,
+                "battery_round_trip_min": 0.88, "battery_loss_per_hour": 0.0001, "battery_soc_floor": 0.2,
             } for b in BUILDINGS},
             "baseline": {b: {"cooling": 0.3, "dhw": 0.0, "battery": 0.0} for b in BUILDINGS},
             "bounds": {b: {"cooling": [0.0, 1.0], "dhw": [-1.0, 1.0], "battery": [-0.83, 0.83]} for b in BUILDINGS},

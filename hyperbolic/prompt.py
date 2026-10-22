@@ -9,6 +9,13 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      limiter's target and headroom), a combined price and carbon signal with its
      outlook, hours left in the month, and a strategy in priority order: comfort,
      peak cap, then cost and carbon. Asks for shorter reasons.
+  4  v0.6.0. Adds the 0.4.0 rule-based controller's plan for the hour as a reference
+     action, a price plan (the 24 hour top and low, whether this is a top-price hour,
+     the top-price hours ahead), whether grid charging pays back the battery's losses
+     (the envelope's spread check), the battery's real charge floor and usable energy,
+     and how far each room is from its setpoint, now that the indoor temperature is the
+     one CityLearn simulated. The strategy puts price first and carbon second, holds the
+     battery for the top-price hours, and trims cooling in rooms that are too cold.
 """
 
 from __future__ import annotations
@@ -17,12 +24,12 @@ import json
 
 from . import district as dc
 from .envelope import Decision, Envelope, EnvelopeConfig, StepContext, proposal_json_schema
-from .model import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, MODELS
-from .signals import combined_signal
+from .model import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, MODELS, StrategyParams, rule_plan_v3
+from .signals import charge_spread, combined_signal
 
 
-PROMPT_VERSION = 3
-PROMPT_VERSIONS = (1, 2, 3)
+PROMPT_VERSION = 4
+PROMPT_VERSIONS = (1, 2, 3, 4)
 
 
 def _r(v, nd=3):
@@ -301,7 +308,8 @@ def build_observation_v3(state: dict, ctx: StepContext, last: Decision | None, l
         "month_peak_so_far_kwh": None if pk is None else _r(pk.month_grid_peak_kwh, 2),
         "limiter_on": bool(envelope is not None and envelope.config.peak_limit),
     }
-    obs["hours_left_in_month"] = max(0, dc.EPISODE_HOURS - t)
+    # The dataset's own month end; states recorded before 0.6.0 carry none and used EPISODE_HOURS.
+    obs["hours_left_in_month"] = max(0, int(shared.get("episode_end_step", dc.EPISODE_HOURS)) - t)
     for b, s in state["buildings"].items():
         obs["buildings"][b]["load_now_kwh"] = _r(s.get("load_kwh"), 3)
     return obs
@@ -373,6 +381,121 @@ Reply with one JSON object only, matching the schema. "reason" is one plain sent
 reply invalid."""
 
 
+def build_observation_v4(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
+                         envelope: Envelope | None) -> dict:
+    """Version 4: version 3 plus the rule-based reference action, the price plan, the spread
+    check's verdict and the battery's real limits."""
+    obs = build_observation_v3(state, ctx, last, look, envelope)
+    reference = rule_plan_v3(obs)
+    t = int(state["time_step"])
+    now = float(state["shared"]["price_forecast"][0])
+    ahead = [(j, p) for j, p in enumerate(look.outlook(t)["price"], start=1) if p is not None]
+    top = max([now] + [p for _, p in ahead])
+    low = min([now] + [p for _, p in ahead])
+    spread_on = envelope is None or envelope.config.spread_check
+    obs["price_plan"] = {
+        "now": _r(now, 4),
+        "top_24h": _r(top, 4),
+        "low_24h": _r(low, 4),
+        "flat_24h": top - low < 1e-9,
+        "top_price_now": top - low >= 1e-9 and now >= top - 1e-9,
+        "top_price_hours_ahead": [j for j, p in ahead if top - low >= 1e-9 and p >= top - 1e-9][:6],
+    }
+    for b, s in state["buildings"].items():
+        st = ctx.buildings[b]
+        ob = obs["buildings"][b]
+        cap = float(s.get("battery_capacity_kwh") or 0.0)
+        floor = float(s.get("battery_soc_floor") or 0.0)
+        pays = None
+        if spread_on and ctx.prices is not None and st.battery_round_trip_min is not None:
+            sp = charge_spread(ctx.prices, st.battery_round_trip_min, st.battery_loss_per_hour or 0.0)
+            pays = None if sp is None else not sp.blocked
+        ob["indoor_vs_setpoint_c"] = _r(float(s["indoor_c"]) - float(s["setpoint_c"]), 2)
+        ob["battery"].update({
+            "soc_floor": _r(floor, 2),
+            "usable_kwh": _r(max(0.0, float(s["battery_soc"]) - floor) * cap, 2),
+            "round_trip_min": _r(st.battery_round_trip_min, 2),
+            "grid_charging_ok": pays,
+        })
+        ob["reference_action"] = reference[b]
+    obs["reference_reason"] = reference["reason"]
+    return obs
+
+
+def system_prompt_v4(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    dev = ("" if cfg.cooling_max_deviation is None else
+           f"\n- cooling more than {cfg.cooling_max_deviation:g} away from the baseline_action")
+    guard = ("\n- extra cooling in an unoccupied building already near the bottom of its band"
+             if cfg.overcool_guard_unoccupied else "")
+    peak = ("\n- battery then tank charging, so district load stays at or below peak.target_kwh"
+            if cfg.peak_limit else "")
+    spread = ("\n- grid charging of a battery when grid_charging_ok is false (spare solar may still be stored)"
+              if cfg.spread_check else "")
+    sp = StrategyParams()  # the strategy's numbers, chosen on the tuning dataset
+    full = sp.cold_margin_c + sp.cold_ramp_c
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings ({dc.DATASET_NAME}, CityLearn). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
+
+Goals, in this order, graded by CityLearn's own KPIs over the month against the no-control reference \
+(storage idle, heat pump meeting the ideal load):
+1. Comfort: no more discomfort than the reference. Discomfort is any occupied hour with indoor \
+temperature outside setpoint +/- {cfg.comfort_band_k:g} C.
+2. Peaks: keep the district's daily peak, its hour to hour swings and its daily load factor at or \
+better than the reference.
+3. Cost first, then carbon: lower electricity cost and lower emissions than the reference. Each \
+building's cost counts equally, whatever its size.
+
+What you see:
+- reference_action in each building: what the 0.4.0 rule-based controller would do this hour, \
+with reference_reason. It is the bar to beat on cost and carbon. Compare your plan with it: where \
+you differ, a point of the strategy below should say why.
+- price_plan: the price now, the 24 hour top and low, top_price_now (this is one of the most \
+expensive hours), top_price_hours_ahead (hours ahead at the top price) and flat_24h (no price \
+difference in view, as on weekends).
+- battery: soc, soc_floor (the battery cannot go below it), usable_kwh above the floor, capacity, \
+max_fraction_per_hour, round_trip_min (the share of a charge that comes back at worst) and \
+grid_charging_ok (false when no price in the next 24 hours pays back the losses and a cheaper \
+hour is still coming).
+- indoor_c is the measured room temperature; indoor_vs_setpoint_c is how far it is from the setpoint.
+- peak: district_load_now_kwh before storage, target_kwh, headroom_kwh, forecast_today_kwh.
+- signal_outlook and next_24h: price and carbon by hour. Carbon is the same hour yesterday.
+
+Strategy:
+1. Comfort and cooling. An occupied room more than {sp.cold_margin_c:g} C below its setpoint is \
+overcooled: cut its cooling below baseline_action, gradually, from 0 at {sp.cold_margin_c:g} C below \
+the setpoint to {sp.cold_trim:g} at {full:g} C or more below. It saves power and discomfort. Never \
+cool less when the room is at or above its setpoint. Otherwise use null.
+2. Hold the battery for the top-price hours. Discharge when top_price_now is true, sized to the \
+building's load_now_kwh (power sent back to the grid earns nothing). Do not discharge in cheaper \
+hours before them, except to keep district load down: once district_load_now_kwh reaches \
+{sp.shave:g} x forecast_today_kwh, discharge to cover the building's own load. On flat_24h days \
+leave the battery idle.
+3. Charge so each battery is near {sp.soc_target:g} when the top-price hours start: only when \
+grid_charging_ok is true, in the cheapest hours with the lowest carbon (usually the early \
+morning), about {sp.charge_rate:g} of capacity per hour spread over several hours, within \
+headroom_kwh. Store spare solar any time.
+4. Never charge at the top price. Leave the hot water tank at 0.
+
+Actions per building, use null to keep the baseline action:
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
+
+A safety envelope checks every value before it is applied. It will clamp:
+- any value outside its range or CityLearn's action space
+- any move larger than {cfg.cooling_rate_per_step:g} (cooling), {cfg.dhw_rate_per_step:g} (dhw) or \
+{cfg.battery_rate_per_step:g} (battery) per hour, measured from last hour's action or this hour's baseline
+- charge that would leave a battery or tank outside {cfg.soc_min:g} to {cfg.soc_max:g} state of charge{dev}
+- in occupied hours within {cfg.comfort_margin_k:g} C of a comfort band edge, cooling below the baseline \
+when warm or above it when cool{guard}{spread}{peak}
+An invalid reply uses the baseline action everywhere for that hour. Clamps are logged against you.
+
+Reply with one JSON object only, matching the schema. "reason" is one plain sentence of at most \
+{dc.REASON_TARGET_CHARS} characters. A reason over {dc.REASON_MAX_CHARS} characters makes the whole \
+reply invalid."""
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -381,6 +504,8 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v2(state, ctx, last, look)
     if version == 3:
         return build_observation_v3(state, ctx, last, look, envelope)
+    if version == 4:
+        return build_observation_v4(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
 
@@ -394,7 +519,8 @@ def user_message(obs: dict) -> str:
 def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], model_key: str,
                   max_tokens: int = DEFAULT_MAX_TOKENS, effort: str = DEFAULT_EFFORT,
                   prompt_version: int = 1) -> dict:
-    system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3}[prompt_version](cfg, buildings)
+    system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
+              4: system_prompt_v4}[prompt_version](cfg, buildings)
     return {
         "model": MODELS[model_key]["id"],
         "max_tokens": max_tokens,

@@ -3,6 +3,7 @@
 combined_signal  price and carbon intensity folded into one 0..1 number per hour
 PeakTracker      district load before storage, today's and the month's peaks, and a
                  forecast of today's peak, for the prompt and the envelope's peak limiter
+charge_spread    whether grid charging a battery now can pay back its losses (0.6.0)
 
 Everything here is built from simulator states as they arrive, so a recorded run
 replays to the same values.
@@ -57,6 +58,49 @@ def peak_target_kwh(fraction: float, today_load_peak: float | None, forecast_pea
     if forecast_peak is None:
         return today_load_peak
     return max(today_load_peak, fraction * forecast_peak)
+
+
+@dataclass(frozen=True)
+class PriceOutlook:
+    """The price now and over the next hours, from forecasts already received (prompt.Lookahead)."""
+
+    now: float
+    ahead: tuple[float | None, ...]  # hours 1, 2, ... ahead; None where nothing is known yet
+
+
+@dataclass(frozen=True)
+class ChargeSpread:
+    pays: bool                     # some hour ahead is worth more than now after losses
+    best_price: float              # the price of the hour worth most after losses
+    best_hours_ahead: int
+    keep: float                    # share of a kWh bought now that is left to use at that hour
+    cheaper_hours_ahead: int | None  # the first hour ahead with a lower price than now, if any
+
+    @property
+    def blocked(self) -> bool:
+        """Charging now is dominated: nothing in view pays it back, and a cheaper hour is coming.
+        A flat outlook (a weekend) does not block, because the next price peak may lie beyond it."""
+        return not self.pays and self.cheaper_hours_ahead is not None
+
+
+def charge_spread(prices: PriceOutlook, round_trip: float, loss_per_hour: float) -> ChargeSpread | None:
+    """A kWh bought now and used j hours later keeps round_trip x (1 - loss_per_hour)^j of itself.
+    Charging pays when that share times some known price ahead is more than the price now. The
+    efficiency is the battery's worst, so a charge that passes pays at any power. None when no
+    price ahead is known."""
+    best, cheaper = None, None
+    for j, p in enumerate(prices.ahead, start=1):
+        if p is None:
+            continue
+        keep = round_trip * (1.0 - loss_per_hour) ** j
+        if best is None or p * keep > best[0] + 1e-12:
+            best = (p * keep, p, j, keep)
+        if cheaper is None and p < prices.now - 1e-9:
+            cheaper = j
+    if best is None:
+        return None
+    return ChargeSpread(pays=best[0] > prices.now + 1e-9, best_price=best[1], best_hours_ahead=best[2], keep=best[3],
+                        cheaper_hours_ahead=cheaper)
 
 
 @dataclass(frozen=True)
