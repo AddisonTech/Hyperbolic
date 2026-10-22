@@ -14,11 +14,17 @@ For each building and device the checks run in this order:
   7. comfort: in occupied hours near the edge of CityLearn's comfort band the heat
      pump may not cool less (too warm) or more (too cool) than the baseline action,
      and with overcool_guard_unoccupied no extra cooling when already cool at night
+  8. trim hold (0.8.0): a cooling trim, once on, is carried in code. While the room is
+     occupied and more than trim_hold_c below its setpoint it stays at least as deep as
+     last hour; within trim_hold_c it eases off by at most trim_release_step per hour; it
+     ends at once at or above the setpoint, in an unoccupied room, or when the baseline
+     has no cooling to trim. The model can end one early only with end_trim and a reason
 Then, across the district:
-  8. peak limit: storage charging is trimmed so the district's load this hour stays at
+  9. peak limit: storage charging is trimmed so the district's load this hour stays at
      or below the peak target (signals.peak_target_kwh), battery first, then the tank
 A null action, or any invalid reply, uses the baseline action for that device.
-Every clamp and fallback is returned with a reason so the runner can log it.
+Every clamp and fallback is returned with a reason so the runner can log it, and every
+trim hold action (start, hold, ease, release, end, early end) is recorded with its reason.
 """
 
 from __future__ import annotations
@@ -44,12 +50,18 @@ class DeviceActions(BaseModel):
     battery: float | None
 
 
+class DeviceActionsV6(DeviceActions):
+    """Prompt version 6 (0.8.0): a building may also end its held cooling trim early, with a reason."""
+
+    end_trim: str | None = Field(default=None, min_length=1, max_length=dc.REASON_MAX_CHARS)
+
+
 @lru_cache(maxsize=8)
-def proposal_model(buildings: tuple[str, ...]) -> type[BaseModel]:
+def proposal_model(buildings: tuple[str, ...], end_trim: bool = False) -> type[BaseModel]:
     """The only shape the model is allowed to return: a reason plus one entry per building."""
     fields: dict[str, Any] = {"reason": (str, Field(min_length=1, max_length=dc.REASON_MAX_CHARS))}
     for b in buildings:
-        fields[b] = (DeviceActions, ...)
+        fields[b] = (DeviceActionsV6 if end_trim else DeviceActions, ...)
     return create_model(
         "Proposal", __config__=ConfigDict(extra="forbid", strict=True, allow_inf_nan=False), **fields
     )
@@ -59,7 +71,7 @@ def _nullable_number() -> dict:
     return {"anyOf": [{"type": "number"}, {"type": "null"}]}
 
 
-def proposal_json_schema(buildings: tuple[str, ...]) -> dict:
+def proposal_json_schema(buildings: tuple[str, ...], end_trim: bool = False) -> dict:
     """Hand-written JSON schema for structured output. Mirrors proposal_model."""
     dev = {
         "type": "object",
@@ -67,14 +79,19 @@ def proposal_json_schema(buildings: tuple[str, ...]) -> dict:
         "required": list(DEVICE_KEYS),
         "additionalProperties": False,
     }
+    if end_trim:
+        dev["properties"]["end_trim"] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        dev["required"].append("end_trim")
     props: dict[str, Any] = {"reason": {"type": "string"}}
     for b in buildings:
         props[b] = dev
     return {"type": "object", "properties": props, "required": ["reason", *buildings], "additionalProperties": False}
 
 
-def parse_reply(text: str | None, buildings: tuple[str, ...]) -> tuple[dict | None, str | None]:
-    """Return ({"reason", "buildings": {b: {device: value}}}, None) or (None, why it was rejected)."""
+def parse_reply(text: str | None, buildings: tuple[str, ...], end_trim: bool = False) -> tuple[dict | None, str | None]:
+    """Return ({"reason", "buildings": {b: {device: value}}}, None) or (None, why it was rejected).
+    With end_trim (prompt version 6) the result also has "end_trim": {b: reason} for every
+    building whose reply ends its held cooling trim early."""
     if text is None or not text.strip():
         return None, "empty or missing reply"
     try:
@@ -85,12 +102,16 @@ def parse_reply(text: str | None, buildings: tuple[str, ...]) -> tuple[dict | No
         return None, "reply is not a JSON object"
     data = _ints_to_floats(data)
     try:
-        p = proposal_model(tuple(buildings)).model_validate(data)
+        p = proposal_model(tuple(buildings), end_trim).model_validate(data)
     except ValidationError as exc:
         first = exc.errors()[0]
         loc = ".".join(str(x) for x in first["loc"])
         return None, f"reply failed schema at {loc or 'root'}: {first['msg']} ({exc.error_count()} error(s))"
-    return {"reason": p.reason, "buildings": {b: getattr(p, b).model_dump() for b in buildings}}, None
+    out = {"reason": p.reason,
+           "buildings": {b: {d: getattr(getattr(p, b), d) for d in DEVICE_KEYS} for b in buildings}}
+    if end_trim:
+        out["end_trim"] = {b: getattr(p, b).end_trim for b in buildings if getattr(p, b).end_trim is not None}
+    return out, None
 
 
 def _ints_to_floats(obj: Any) -> Any:
@@ -133,6 +154,14 @@ class EnvelopeConfig:
     # its round trip and standing losses and a cheaper hour is coming (signals.charge_spread).
     # Physical, not fitted: the efficiency and loss come from the battery itself.
     spread_check: bool = True
+    # Added in 0.8.0. Carry a cooling trim in code once it is on (Envelope._hold_trim). The
+    # numbers are the version 5 strategy's (StrategyParamsV5.trim_hold_c and trim_step); a trim
+    # shallower than trim_min_depth counts as off, so rounding never starts one, and a reply that
+    # misses the held depth by less than it is taken as rounding, not as a release.
+    trim_hold: bool = True
+    trim_hold_c: float = 0.5
+    trim_release_step: float = 0.02
+    trim_min_depth: float = 0.002
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -142,14 +171,20 @@ class EnvelopeConfig:
         """Rebuild the config a run used. Fields a run did not record keep the behavior
         they had before they existed, so older runs replay exactly."""
         legacy = {"cooling_max_deviation": None, "overcool_guard_unoccupied": False, "peak_limit": False,
-                  "spread_check": False}
+                  "spread_check": False, "trim_hold": False}
         return cls(**{**legacy, **(data or {})})
 
     @classmethod
     def v040(cls) -> "EnvelopeConfig":
         """The 0.4.0 rule set: everything before the spread check. The rule-based reference
         controller runs with it so its 0.4.0 result reproduces exactly."""
-        return cls(spread_check=False)
+        return cls(spread_check=False, trim_hold=False)
+
+    @classmethod
+    def v070(cls) -> "EnvelopeConfig":
+        """The 0.7.0 rule set: everything before the trim hold. Runs on prompt versions before 6
+        use it, so they behave as they did in 0.7.0."""
+        return cls(trim_hold=False)
 
     def rate(self, device: str) -> float:
         return {"cooling": self.cooling_rate_per_step, "dhw": self.dhw_rate_per_step,
@@ -203,6 +238,11 @@ def _r(v: float | None) -> float | None:
     return None if v is None else round(float(v), 4)
 
 
+def _hold_event(b: str, action: str, depth_before: float, depth_after: float, reason: str) -> dict:
+    return {"building": b, "action": action, "depth_before": _r(depth_before), "depth_after": _r(depth_after),
+            "reason": reason}
+
+
 @dataclass
 class Decision:
     """Actions per building and device; None means the baseline action is used."""
@@ -211,6 +251,7 @@ class Decision:
     clamps: list[Clamp] = field(default_factory=list)
     fallback: str | None = None
     reason: str = ""
+    holds: list[dict] = field(default_factory=list)  # trim hold actions this hour (0.8.0)
 
     @property
     def status(self) -> str:
@@ -227,13 +268,16 @@ class Decision:
         return out
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "status": self.status,
             "reason": self.reason,
             "fallback": self.fallback,
             "actions": {b: {d: _r(v) for d, v in acts.items()} for b, acts in self.actions.items()},
             "clamps": [c.as_dict() for c in self.clamps],
         }
+        if self.holds:  # absent when the hold did nothing, so older runs replay byte for byte
+            out["holds"] = [dict(h) for h in self.holds]
+        return out
 
 
 def baseline_decision(buildings, fallback: str | None = None) -> Decision:
@@ -245,11 +289,13 @@ class Envelope:
         self.config = config or EnvelopeConfig()
         self.memory: dict[str, float] = {}  # "Building_1.battery" -> last applied action
         self.trims: dict[str, float] = {}  # building -> last hour's cooling minus its baseline (0.7.0, read only)
+        self.holds: dict[str, float] = {}  # building -> depth of the cooling trim being held (0.8.0)
 
     def fallback(self, ctx: StepContext, why: str) -> Decision:
         """Use the baseline action everywhere and remember it as the last action."""
         self.memory = {f"{b}.{d}": st.baseline[d] for b, st in ctx.buildings.items() for d in DEVICE_KEYS}
         self.trims = {}
+        self.holds = {}
         return baseline_decision(ctx.buildings, fallback=why)
 
     def apply(self, proposal: dict | None, ctx: StepContext, invalid_reason: str | None = None) -> Decision:
@@ -258,11 +304,16 @@ class Envelope:
         clamps: list[Clamp] = []
         actions: dict[str, dict[str, float | None]] = {}
         memory: dict[str, float] = {}
+        events: list[dict] = []
+        holds: dict[str, float] = {}
+        early = proposal.get("end_trim") or {}
         for b, st in ctx.buildings.items():
             req = proposal["buildings"].get(b, {})
             actions[b] = {}
             for d in DEVICE_KEYS:
                 v = self._limit(b, d, req.get(d), st, clamps, ctx.prices)
+                if d == "cooling" and self.config.trim_hold:
+                    v = self._hold_trim(b, v, st, early.get(b), clamps, events, holds)
                 actions[b][d] = v
                 memory[f"{b}.{d}"] = st.baseline[d] if v is None else v
         if self.config.peak_limit:
@@ -270,7 +321,78 @@ class Envelope:
         self.memory = memory
         self.trims = {b: 0.0 if actions[b]["cooling"] is None else actions[b]["cooling"] - st.baseline["cooling"]
                       for b, st in ctx.buildings.items()}
-        return Decision(actions=actions, clamps=clamps, reason=proposal["reason"])
+        if self.config.trim_hold:
+            self.holds = holds
+        return Decision(actions=actions, clamps=clamps, reason=proposal["reason"], holds=events)
+
+    def held_trim(self, b: str, st: BuildingState) -> tuple[float, str, str]:
+        """What the trim hold requires of building b this hour, before any early end:
+        (depth cooling must stay at least this far below the baseline, kind, why). kind is
+        "none" (no trim on), "end" (no trim may run now), "hold" or "ease"."""
+        cfg = self.config
+        prev = self.holds.get(b, 0.0)
+        gap = st.indoor_c - st.setpoint_c
+        if st.baseline["cooling"] <= cfg.trim_min_depth:
+            return 0.0, "end", "the baseline has no cooling to trim"
+        if not st.occupied:
+            return 0.0, "end", "the room is unoccupied"
+        if gap >= 0:
+            return 0.0, "end", f"indoor {st.indoor_c:.1f} C is at or above the setpoint {st.setpoint_c:.1f} C"
+        if prev <= cfg.trim_min_depth:
+            return 0.0, "none", ""
+        if gap < -cfg.trim_hold_c:
+            return prev, "hold", (f"indoor {st.indoor_c:.1f} C is more than {cfg.trim_hold_c:g} C below the setpoint "
+                                  f"{st.setpoint_c:.1f} C, trim held at {prev:.3f}")
+        need = round(max(0.0, prev - cfg.trim_release_step), 4)
+        return need, "ease", (f"indoor {st.indoor_c:.1f} C is within {cfg.trim_hold_c:g} C of the setpoint "
+                              f"{st.setpoint_c:.1f} C, trim eases off from {prev:.3f} by at most "
+                              f"{cfg.trim_release_step:g} per hour")
+
+    def _hold_trim(self, b: str, v: float | None, st: BuildingState, early: str | None, clamps: list[Clamp],
+                   events: list[dict], holds: dict[str, float]) -> float | None:
+        """Carry building b's cooling trim (0.8.0). A trim is cooling more than trim_min_depth
+        below the baseline action, and its depth is how far below. This runs after the comfort
+        rule and only keeps cooling below the baseline, by no more than the trim already passed
+        the deviation limit with, so it never undoes another rule. Every action is recorded in
+        events; a changed value is also a clamp with rule trim_hold."""
+        cfg = self.config
+        point = f"{b}.cooling"
+        base = st.baseline["cooling"]
+        prev = self.holds.get(b, 0.0)
+        on = prev > cfg.trim_min_depth
+        applied = base if v is None else v
+        need, kind, why = self.held_trim(b, st)
+        if kind != "end" and on and early:
+            kind, why = "end_early", f"the model ended it early: {early}"
+        if kind in ("end", "end_early"):
+            trimmed = base - applied > cfg.trim_min_depth
+            if trimmed:
+                clamps.append(Clamp(point, "trim_hold", applied, round(base, 4),
+                                    f"trim ended, {why}, cooling back to the baseline"))
+                v = round(base, 4)
+            if on or trimmed:
+                events.append(_hold_event(b, kind, prev, 0.0, early if kind == "end_early" else why))
+            return v
+        acted = False
+        # A miss smaller than trim_min_depth is rounding (the observation shows the baseline and
+        # trims to 3 decimals) and is let through; the held depth below still counts in full.
+        if on and base - applied < need - cfg.trim_min_depth:
+            lo = max(cfg.cooling_min, st.bounds["cooling"][0])
+            nv = round(max(lo, base - need), 4)
+            clamps.append(Clamp(point, "trim_hold", applied, nv, why))
+            v = applied = nv
+            acted = True
+        depth = round(max(base - applied, need), 4)
+        if depth <= cfg.trim_min_depth:
+            if on:
+                events.append(_hold_event(b, "release", prev, 0.0, "trim eased off fully"))
+            return v
+        holds[b] = depth
+        if not on:
+            events.append(_hold_event(b, "start", 0.0, depth, "trim started"))
+        elif acted:
+            events.append(_hold_event(b, kind, prev, depth, why))
+        return v
 
     def peak_target(self, ctx: StepContext) -> float | None:
         if ctx.peak is None:

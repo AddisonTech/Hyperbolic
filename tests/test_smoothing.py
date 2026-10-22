@@ -51,7 +51,7 @@ def test_peak_tracker_reports_last_hour_and_next_hour_as_yesterday():
 
 def test_envelope_remembers_each_buildings_trim_and_forgets_it_on_fallback():
     st, ctx, *_ = _obs()
-    env = Envelope(EnvelopeConfig())
+    env = Envelope(EnvelopeConfig.v070())  # the record alone; the fake room sits at its setpoint
     base = st["baseline"]["Building_1"]["cooling"]
     prop = {"reason": "t", "buildings": {b: {"cooling": None, "dhw": None, "battery": None} for b in st["buildings"]}}
     prop["buildings"]["Building_1"]["cooling"] = base - 0.08

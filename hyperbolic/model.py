@@ -4,6 +4,10 @@ LiveSupervisor     calls the Messages API.
 ScriptedSupervisor returns deterministic rule-based replies for offline runs and tests.
 HoldSupervisor     always keeps the baseline action (the live page's baseline option).
 ReplaySupervisor   serves recorded replies from a run directory, with zero API calls.
+RecordedReplySupervisor
+                   serves a recorded run's replies hour by hour whatever the request, so the
+                   same answers can be sent through other envelope rules (an evaluation, never
+                   a recorded run).
 """
 
 from __future__ import annotations
@@ -184,6 +188,32 @@ class ReplaySupervisor:
         )
 
 
+class RecordedReplySupervisor:
+    """Answers each hour with the reply a recorded run got for that hour, without checking the
+    request. Used to send a live run's own actions through different envelope rules
+    (scripts/evaluate_hold.py); with the run's own rules it reproduces the run exactly."""
+
+    kind = "recorded"
+
+    def __init__(self, calls_path: Path, model_key: str) -> None:
+        self.model_key = model_key
+        self._inner = ReplaySupervisor(calls_path, model_key)
+
+    def call(self, step: int, request: dict) -> CallResult:
+        rec = self._inner._by_step.get(step)
+        if rec is None:
+            return CallResult(None, error="no recorded reply for this hour")
+        reply = rec["reply"]
+        return CallResult(
+            text=reply.get("text"),
+            input_tokens=reply.get("input_tokens", 0),
+            output_tokens=reply.get("output_tokens", 0),
+            stop_reason=reply.get("stop_reason"),
+            error=reply.get("error"),
+            model=reply.get("model"),
+        )
+
+
 @dataclass(frozen=True)
 class RuleParams:
     """Knobs of the rule-based policy for prompt version 3 observations. Defaults are the
@@ -279,7 +309,8 @@ class ScriptedSupervisor:
     building's own load, and can shave the district peak: the 0.4.0 rule-based controller.
     For version 4 it follows that prompt's strategy literally (strategy_plan_v4), which is
     how the strategy's numbers are chosen offline, and likewise for version 5
-    (strategy_plan_v5). Version 2 observations get the 0.3.0
+    (strategy_plan_v5). Version 6 runs the same version 5 strategy, never ends a trim early,
+    and leaves holding trims to the envelope. Version 2 observations get the 0.3.0
     rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
@@ -321,6 +352,9 @@ class ScriptedSupervisor:
                               stop_reason="end_turn", model="scripted")
         if "smoothing" in obs:
             reply = strategy_plan_v5(obs, self.strategy_v5)
+            if "strategy_battery_reason" in obs:  # version 6: the reply carries end_trim
+                for b in obs["buildings"]:
+                    reply[b]["end_trim"] = None
         elif "price_plan" in obs:
             reply = strategy_plan_v4(obs, self.strategy)
         elif "signal_outlook" in obs:
@@ -567,6 +601,22 @@ def strategy_plan_v5(obs: dict, p: StrategyParamsV5 | None = None) -> dict:
     started, is held until the room is nearly back at its setpoint and then released a little each
     hour; a grid charge starts small and rises a little each hour; the top-price discharge can keep
     some charge back for the evening district peak."""
+    reply, battery_notes, cooling_notes = _strategy_v5(obs, p)
+    notes = battery_notes | cooling_notes
+    reason = "; ".join(sorted(notes)) if notes else "Nothing stands out, hold storage and meet the cooling load"
+    return {"reason": (reason[0].upper() + reason[1:])[:dc.REASON_TARGET_CHARS], **reply}
+
+
+def battery_plan_v5(obs: dict, p: StrategyParamsV5 | None = None) -> tuple[dict[str, float], str]:
+    """The version 5 strategy's battery action for each building and why: what prompt version 6
+    shows the model each hour as strategy_battery, in place of the 0.4.0 rule-based plan."""
+    reply, battery_notes, _ = _strategy_v5(obs, p)
+    reason = "; ".join(sorted(battery_notes)) if battery_notes else "nothing stands out, hold the batteries"
+    return {b: r["battery"] for b, r in reply.items()}, (reason[0].upper() + reason[1:])[:dc.REASON_TARGET_CHARS]
+
+
+def _strategy_v5(obs: dict, p: StrategyParamsV5 | None = None) -> tuple[dict, set[str], set[str]]:
+    """strategy_plan_v5's actions per building, with its battery and cooling notes kept apart."""
     p = p or StrategyParamsV5()
     pp, peak, nxt = obs["price_plan"], obs["peak"], obs["next_24h"]
     top_now = bool(pp["top_price_now"])
@@ -586,7 +636,8 @@ def strategy_plan_v5(obs: dict, p: StrategyParamsV5 | None = None) -> dict:
     caps = {b: s["battery"]["capacity_kwh"] or 0.0 for b, s in obs["buildings"].items()}
     total_cap = sum(caps.values()) or 1.0
     reply: dict = {}
-    notes = set()
+    notes: set[str] = set()  # battery notes
+    cooling_notes: set[str] = set()
     for b, s in sorted(obs["buildings"].items()):
         bat = s["battery"]
         cap, fmax, soc = caps[b], bat["max_fraction_per_hour"] or 0.0, bat["soc"]
@@ -636,12 +687,11 @@ def strategy_plan_v5(obs: dict, p: StrategyParamsV5 | None = None) -> dict:
             # The baseline arrives rounded to 3 decimals: keep 0.001 clear of the deviation limit.
             cooling = math.ceil(max(0.0, base + max(trim, -p.cold_trim) + 0.001) * 1000) / 1000
             if cooling < base:
-                notes.add("hold a cooling trim in a cold room, easing it off slowly")
+                cooling_notes.add("hold a cooling trim in a cold room, easing it off slowly")
             else:
                 cooling = None
         reply[b] = {"cooling": cooling, "dhw": 0.0, "battery": math.trunc(battery * 1000) / 1000}
-    reason = "; ".join(sorted(notes)) if notes else "Nothing stands out, hold storage and meet the cooling load"
-    return {"reason": (reason[0].upper() + reason[1:])[:dc.REASON_TARGET_CHARS], **reply}
+    return reply, notes, cooling_notes
 
 
 class HoldSupervisor:

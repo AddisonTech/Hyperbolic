@@ -191,7 +191,8 @@ def test_config_is_respected():
 
 
 def test_cooling_deviation_cap(envelope_v3):
-    d = envelope_v3.apply(proposal(Building_1={"cooling": 0.7}, Building_2={"cooling": 0.0}), ctx())
+    d = envelope_v3.apply(proposal(Building_1={"cooling": 0.7}, Building_2={"cooling": 0.0}),
+                          ctx(Building_2={"indoor": 23.0}))  # a cold room, where a trim may run
     assert ("Building_1.cooling", "deviation") in rules(d)
     assert ("Building_2.cooling", "deviation") in rules(d)
     assert d.actions["Building_1"]["cooling"] == pytest.approx(0.55)
