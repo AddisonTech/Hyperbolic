@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0 (2026-10-22)
+
+Goal: the live agent beats the 0.4.0 rule-based controller on cost and emissions without giving back its daily peak, ramping and load factor wins, at equal or better comfort.
+
+Why the 0.4.0 live month lost on cost (0.9765 against the rule-based 0.9611, a gap of $1.20 of the $82.69 baseline bill), from an hour by hour comparison of the two runs, ranked by dollars:
+
+1. **It reached the 4 to 7 pm price peak with too little charge.** The batteries hold 8.5 kWh above their floor, but the district draws 14.2 kWh in those three hours, so every stored kWh can be sold at the top price. The agent arrived with 4.8 kWh stored on average against the rule-based controller's 6.6 kWh, and delivered 86 kWh into top-price hours against 119 kWh: $1.90 less saved.
+2. **It spent charge before the peak.** 23.5 kWh went out between 7 am and 4 pm on top-price days (the rule-based controller: none), saving only the off-peak price ($0.65). Its own reasons cite peak shaving in 12 of those 20 hours and a high combined signal in 12: the 50/50 price and carbon signal ranks high-carbon middays as discharge hours at the off-peak price.
+3. **It bought more grid energy:** 14 kWh more off-peak charging on top-price days, $0.46.
+4. **It charged at the top price** in 3 building hours (1.9 kWh, $0.11): the only charging of the month that no later price could pay back.
+5. Partly offsetting: less cycling on flat-price weekends ($0.46) and some evening discharge ($0.16).
+
+Round trip losses were not a cause (both runs got back about 0.875 of what they charged). CityLearn's district cost is the mean of the three buildings' cost ratios, so a dollar saved in the smallest bill counts most.
+
+Comfort, and a mapping bug: discomfort matched the baseline to four decimals in every live run because the agent never moved cooling (0 of 2,157 building hours off the baseline) and could not see why it should. The indoor temperature in the state was CityLearn's observation, which for an LSTM building is the dataset's no-control value for the coming hour, written before the hour is simulated. The agent and the envelope's comfort rule never saw the room CityLearn simulated: over the baseline month the two differ by a median 1.0 C and up to 6.4 C, and with cooling cut by 0.3 the simulated rooms ran at 28 to 31 C while the state still said 22 to 24 C. The baseline actually overcools: most uncomfortable occupied hours are too cold with the heat pump running. CityLearn scores "too cold" against the heating setpoint; that equals the cooling setpoint in every row of both datasets used here, so that difference has no effect.
+
+Changes:
+
+- **Indoor temperature fix.** The simulator state now reports the temperature CityLearn's LSTM simulated for the hour just finished. A test pins it: the temperature at the start of each hour equals the one simulated for the hour before, and a cooling cut shows up as a warmer room.
+- **Spread check in the envelope.** Grid charging of a battery is blocked when no price in the next 24 hours, after the battery's worst round trip efficiency (the minimum of its power efficiency curve, 0.88 or 0.89 here) and its standing loss until then, is worth more than the price now, while a cheaper hour is coming. Spare solar may still be stored. Each block is a clamp with rule `spread` and its reason. Nothing is fitted: the numbers come from each battery's own data. A flat outlook (a weekend) does not block, because the next peak may lie beyond the forecast. Older runs and the rule-based reference replay without it.
+- **Prompt version 4 (default).** Adds the 0.4.0 rule-based controller's plan for the hour as `reference_action` with its reason; a price plan (the 24 hour top and low, `top_price_now`, the top-price hours ahead, `flat_24h`); each battery's real charge floor, usable energy, worst round trip efficiency and `grid_charging_ok`, the spread check's verdict; and each room's distance from its setpoint. The strategy now puts price first and carbon second: hold the battery for the top-price hours, discharge there sized to each building's own load, charge about 0.15 of capacity per hour in the cheapest, cleanest hours so the battery is full when they start, discharge early only to keep district load under 0.9 of the forecast peak, leave weekends alone, and trim cooling gradually (up to 0.1 below the baseline) in occupied rooms more than 0.5 C below their setpoint.
+- **The rule-based controller is frozen as the 0.4.0 reference.** `hyperbolic run --scripted` and the live page's rule-based option run it on prompt version 3 with the 0.4.0 envelope, so it still scores cost 0.9611 and emissions 0.9947 (a test checks this on the full month). `--scripted --prompt-version 4` runs the version 4 strategy literally (`strategy_plan_v4`), with no model.
+- **Tuning on a separate dataset.** `scripts/tune_strategy.py` chooses the strategy's numbers on `citylearn_challenge_2023_phase_2_online_evaluation_1` (CityLearn v3.0.2, copied unchanged into `scripts/tuning_data`): the same three buildings and LSTM models, but June, July and August of a different period with its own weather, loads, carbon and tariff, and no hour in common with the reported month. A setting qualifies when, averaged over the three months, it is as comfortable as the baseline, keeps both peaks, ramping and the load factor at or below the baseline, and beats the 0.4.0 rule-based controller on cost and emissions; 36 of 216 did. The reported month was not used to choose anything.
+- `hyperbolic run --prompt-version` defaults to 4 for models and 3 for `--scripted`. `scripts/tune_rules.py` keeps searching the 0.4.0 controller on its own settings.
+- `hyperbolic compare --against RUN` (repeatable) prints other finished runs of the same length beside the baseline and the agent, so a live run can be read against the rule-based controller in one table. The viewer data is unchanged.
+- Tests: the spread check (blocked at the top price with its reason, allowed when the coming peak pays, not blocked by a flat weekend, blocked when only a cheaper hour is ahead, standing losses, spare solar, discharging untouched, off for older runs and the reference, before the peak limiter), the reference action equal to what the rule-based controller replies, the version 4 observation and prompt, the indoor temperature fix, the frozen rule-based month, a version 4 CityLearn run that replays identically, recorded version 4 runs that replay byte for byte and detect a changed reference policy, and `compare --against`.
+
+Results, phase 2 local evaluation month (719 hours) against the committed baseline. The version 4 strategy column is the scripted stand-in, run once after tuning; it is not a model result.
+
+| CityLearn KPI (district) | Baseline | 0.4.0 rule-based | 0.4.0 live, Haiku | 0.6.0 v4 strategy, scripted | 0.6.0 live, Haiku |
+|---|---|---|---|---|---|
+| cost_total | 1.000 | 0.9611 | 0.9765 | 0.9057 | TODO |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9974 | 0.9506 | TODO |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.1714 | 0.0458 | TODO |
+| daily_peak_average | 1.000 | 0.9978 | 0.9525 | 0.9193 | TODO |
+| all_time_peak_average | 1.000 | 1.0000 | 1.0000 | 0.9703 | TODO |
+| ramping_average | 1.000 | 1.1309 | 0.9965 | 1.0151 | TODO |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9559 | 0.9661 | TODO |
+| electricity_consumption_total | 1.000 | 1.0073 | 1.0098 | 0.9602 | TODO |
+
+The baseline and the 0.4.0 rule-based controller reproduce their 0.4.0 numbers exactly in this release.
+
+
 ## 0.5.0 (2026-10-21)
 
 Local live mode: watch a run unfold in the browser, hour by hour, on the same viewer as the published replay.
