@@ -9,10 +9,17 @@ control=True activates the dataset's actions (heat pump, hot water tank, battery
 for the supervisor. The baseline action reported each hour is the closest
 equivalent of the no-control reference under active control: storage idle and the
 heat pump at the fraction of nominal power that delivers the ideal cooling load.
+
+Indoor temperature (0.6.0): CityLearn's own indoor temperature observation at the
+start of hour t is the dataset's no-control value for hour t, written before its LSTM
+has simulated that hour, so it never reflects what the heat pump actually did. The
+state reports the temperature the LSTM simulated for the hour just finished instead:
+the reading a thermostat would show now.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -73,6 +80,9 @@ class CityLearnSimulator:
         self.env = env
         self.t = int(env.time_step)
         self.end_t = int(env.time_steps) - 1
+        # The dataset's last time step, whatever `hours` cuts the run to: hours left in its month.
+        schema = json.loads(self.schema.read_text(encoding="utf-8"))
+        self.episode_end_t = int(schema.get("simulation_end_time_step", self.end_t))
         self.decisions = self.end_t  # hourly decisions in this episode
         self.action_names = [list(names) for names in env.action_names]
         return self.state()
@@ -142,6 +152,24 @@ class CityLearnSimulator:
         cooling = self._baseline_cooling(b) * _f(b.cooling_device.nominal_power)
         return round(_f(o["non_shiftable_load"]) + cooling + dhw - _f(o["solar_generation"]), 4)
 
+    def _indoor_now(self, b, o) -> float:
+        """Indoor temperature now: what CityLearn's LSTM simulated for the hour just finished.
+        Its observation for hour t is the dataset's no-control value until hour t is simulated."""
+        t = self.env.time_step
+        if t > 0:
+            return _f(b.energy_simulation.indoor_dry_bulb_temperature[t - 1])
+        return _f(o["indoor_dry_bulb_temperature"])
+
+    @staticmethod
+    def _battery_round_trip_min(b) -> float:
+        """Worst round trip efficiency of the battery: CityLearn applies the square root of the
+        power efficiency curve on the way in and again on the way out, so a full cycle keeps at
+        least the curve's lowest value."""
+        curve = getattr(b.electrical_storage, "power_efficiency_curve", None)
+        if curve is None or len(curve) < 2:
+            return round(_f(b.electrical_storage.efficiency), 4)
+        return round(float(min(curve[1])), 4)
+
     def state(self) -> dict:
         """The district as CityLearn's own observations describe it at the start of this hour."""
         env = self.env
@@ -159,12 +187,13 @@ class CityLearnSimulator:
             + [_f(o0[f"electricity_pricing_predicted_{i}"]) for i in (1, 2, 3)],
             "carbon_intensity": _f(o0["carbon_intensity"]),
             "forecast_horizons_h": [0, *dc.FORECAST_HORIZONS_H],
+            "episode_end_step": self.episode_end_t,
         }
         buildings, baseline, bounds = {}, {}, {}
         for b in env.buildings:
             o = obs[b.name]
             buildings[b.name] = {
-                "indoor_c": _f(o["indoor_dry_bulb_temperature"]),
+                "indoor_c": self._indoor_now(b, o),
                 "setpoint_c": _f(o["indoor_dry_bulb_temperature_cooling_set_point"]),
                 "occupants": _f(o["occupant_count"]),
                 "cooling_demand_kwh": _f(b.energy_simulation.cooling_demand_without_control[t]),
@@ -177,6 +206,9 @@ class CityLearnSimulator:
                 "power_outage": bool(_f(o.get("power_outage", 0.0))),
                 "battery_capacity_kwh": round(_f(b.electrical_storage.capacity), 4),
                 "battery_power_kw": round(_f(b.electrical_storage.nominal_power), 4),
+                "battery_round_trip_min": self._battery_round_trip_min(b),
+                "battery_loss_per_hour": round(_f(b.electrical_storage.loss_coefficient), 8),
+                "battery_soc_floor": round(1.0 - _f(getattr(b.electrical_storage, "depth_of_discharge", 1.0)), 4),
                 "dhw_capacity_kwh": round(_f(b.dhw_storage.capacity), 4),
                 "cooling_power_kw": round(_f(b.cooling_device.nominal_power), 4),
                 "dhw_heater_efficiency": round(_f(b.dhw_device.efficiency), 4),

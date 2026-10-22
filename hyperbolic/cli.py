@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from . import __version__
 from . import district as dc
-from .envelope import Envelope, EnvelopeConfig
+from .envelope import Envelope
 from .model import (
     DEFAULT_BUDGET_USD,
     DEFAULT_EFFORT,
@@ -22,7 +23,16 @@ from .model import (
     resolve_api_key,
 )
 from .prompt import PROMPT_VERSION, PROMPT_VERSIONS
-from .runner import AgentController, BaselineController, RunWriter, new_run_dir, replay_run, run_session
+from .runner import (
+    RULE_PROMPT_VERSION,
+    AgentController,
+    BaselineController,
+    RunWriter,
+    controller_settings,
+    new_run_dir,
+    replay_run,
+    run_session,
+)
 from .viewer import find_latest_pair, write_viewer_data
 
 DEFAULT_VIEWER_DATA = Path("docs/data/viewer.json")
@@ -75,13 +85,14 @@ def cmd_run(args) -> int:
         return 2
     faults = ScriptedSupervisor.default_faults(hours) if args.inject_faults else None
     sup = ScriptedSupervisor(args.model, faults=faults) if args.scripted else LiveSupervisor(args.model)
+    prompt_version, envelope_cfg = controller_settings(args.scripted, args.prompt_version)
     ctl = AgentController(
         supervisor=sup,
-        envelope=Envelope(EnvelopeConfig()),
+        envelope=Envelope(envelope_cfg),
         budget=Budget(limit_usd=args.budget),
         max_tokens=args.max_tokens,
         effort=args.effort,
-        prompt_version=args.prompt_version,
+        prompt_version=prompt_version,
     )
     out = new_run_dir(args.runs_dir, "agent", "citylearn")
     print(f"agent, {dc.DATASET}, {sup.kind} replies, {MODELS[args.model]['id']}, "
@@ -114,14 +125,24 @@ def cmd_compare(args) -> int:
         return 1
     data = write_viewer_data(pair, args.out)
     s = data["scenarios"][0]
+    others = []
+    for d in args.against or []:
+        try:
+            others.append(_against(Path(d), s["hours"]))
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"error: --against {d}: {exc}", file=sys.stderr)
+            return 1
     print(f"\n{s['name']} ({s['hours']} h{', agent side is a SAMPLE' if s['agent_sample'] else ''})")
     print(f"  {s['headline']['text']}")
-    print(f"  {'CityLearn KPI (district)':<44}{'baseline':>10}{'agent':>10}")
+    print(f"  {'CityLearn KPI (district)':<44}{'baseline':>10}{'agent':>10}" + "".join(f"{o[0]:>12}" for o in others))
     for k in data["kpis"]:
         b, a = s["baseline"]["kpi"].get(k["id"]), s["agent"]["kpi"].get(k["id"])
         if b is None and a is None:
             continue
-        print(f"  {k['id'] + ' (' + k['unit'] + ')':<44}{_fmt(b):>10}{_fmt(a):>10}")
+        print(f"  {k['id'] + ' (' + k['unit'] + ')':<44}{_fmt(b):>10}{_fmt(a):>10}"
+              + "".join(f"{_fmt(o[1].get(k['id'])):>12}" for o in others))
+    for label, _, d in others:
+        print(f"  {label}: {d}")
     r = s["agent_run"]
     print(f"  model calls {r['calls']}, clamped hours {r['clamped_hours']}, fallback hours {r['fallback_hours']}, "
           f"cost ${r['cost_usd']:.4f} of ${r['budget_usd']:.2f}{' (budget stop hit)' if r['budget_stopped'] else ''}")
@@ -141,6 +162,22 @@ def cmd_serve(args) -> int:
     except OSError as exc:
         print(f"error: could not listen on 127.0.0.1:{args.port} ({exc.strerror or exc}); try --port", file=sys.stderr)
         return 2
+
+
+def _against(run_dir: Path, hours: int) -> tuple[str, dict, Path]:
+    """A finished agent run to print beside the compared pair, for example the rule-based controller."""
+    m = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    r = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    if m.get("mode") != "agent" or m.get("dataset") != dc.DATASET:
+        raise ValueError("not an agent run on this dataset")
+    if int(r.get("steps", 0)) != hours:
+        raise ValueError(f"it covers {r.get('steps')} hours, the compared runs {hours}")
+    sup = m.get("supervisor") or {}
+    if sup.get("kind") == "scripted":
+        label = "rule-based" if int(sup.get("prompt_version", 1)) <= RULE_PROMPT_VERSION else "v4 script"
+    else:
+        label = str(sup.get("model_key") or sup.get("kind"))
+    return label, r.get("district_kpis") or {}, run_dir
 
 
 def _fmt(v):
@@ -175,8 +212,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="replies from the deterministic rule-based policy, no API calls")
     r.add_argument("--inject-faults", action="store_true",
                    help="with --scripted, send a bad reply now and then to exercise clamps and fallback")
-    r.add_argument("--prompt-version", type=int, default=PROMPT_VERSION, choices=PROMPT_VERSIONS,
-                   help=f"observation and prompt version (default: {PROMPT_VERSION})")
+    r.add_argument("--prompt-version", type=int, default=None, choices=PROMPT_VERSIONS,
+                   help=f"observation and prompt version (default: {PROMPT_VERSION}; with --scripted, "
+                        f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while version 4 "
+                        "runs the version 4 strategy literally)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")
@@ -188,6 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--runs-dir", type=Path, default=Path("runs"))
     c.add_argument("--pair", nargs=2, metavar=("BASELINE_DIR", "AGENT_DIR"))
     c.add_argument("--out", type=Path, default=DEFAULT_VIEWER_DATA)
+    c.add_argument("--against", action="append", metavar="AGENT_DIR",
+                   help="also print this finished agent run's KPIs, for example the rule-based controller "
+                        "(repeatable; the viewer data is unchanged)")
     c.set_defaults(func=cmd_compare)
 
     sv = sub.add_parser("serve", help="watch a run live in the browser (local only, 127.0.0.1)")
