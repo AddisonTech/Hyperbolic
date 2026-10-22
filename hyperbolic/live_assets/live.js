@@ -274,6 +274,13 @@
       if (d.clamps.length > 3) ul.appendChild(el("li", "", "+" + (d.clamps.length - 3) + " more"));
       li.appendChild(ul);
     }
+    if (d.trim_ends && d.trim_ends.length) {
+      var te = el("ul", "trim-ends");
+      d.trim_ends.forEach(function (t) {
+        te.appendChild(el("li", "", t.building.replace("_", " ") + ": trim ended early: " + t.reason));
+      });
+      li.appendChild(te);
+    }
     ui.log.insertBefore(li, ui.log.firstChild);
     while (ui.log.childNodes.length > LOG_MAX) ui.log.removeChild(ui.log.lastChild);
   }

@@ -481,6 +481,18 @@
     var what = { cooling: "heat pump", dhw: "hot water tank", battery: "battery" }[parts[1]] || parts[1];
     return bname(parts[0]) + " " + what;
   }
+  // Cooling trims the model ended early (0.8.0): the envelope holds a trim until the room is
+  // nearly back at its setpoint, so an early end always comes with the model's reason.
+  function trimEndList(ends) {
+    var ul = el("ul", "trim-ends");
+    ends.forEach(function (t) {
+      var li = el("li");
+      li.appendChild(el("code", "", "trim ended early"));
+      li.appendChild(el("span", "", bname(t.building) + " heat pump: " + t.reason));
+      ul.appendChild(li);
+    });
+    return ul;
+  }
   function renderReasons(hour) {
     var sc = state.sc, host = $("reasons");
     var show = window.innerWidth < 640 ? 3 : 4;
@@ -504,6 +516,7 @@
         if (d.clamps.length > 5) ul.appendChild(el("li", "", "+" + (d.clamps.length - 5) + " more"));
         card.appendChild(ul);
       }
+      if (d.trim_ends && d.trim_ends.length && k === 0) card.appendChild(trimEndList(d.trim_ends));
       host.appendChild(card);
       if (k === 0 && !reduceMotion) (function (c) { requestAnimationFrame(function () { c.classList.remove("enter"); }); })(card);
     }
