@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.7.0 (2026-10-22)
+
+Goal: bring ramping below the baseline and the load factor back toward 0.4.0 without giving back cost, emissions, comfort or the peaks, and clean up the public page.
+
+Why the 0.6.0 live month ramped more, from its hourly decisions in `docs/data` (the hourly series reproduce its ramping 1.0174 and load factor 0.9773 exactly):
+
+- **Ramping.** CityLearn's ramping adds up every hour the district draws more than the hour before; a step down costs nothing. Split between the two kinds of action, the cooling trims added 2.45 percent and the battery took 0.71 percent off.
+  - The trims flickered. There were 276 trim episodes, with a median length of one hour (160 lasted exactly one hour), and 263 ended while the room was still occupied: the room warmed past the threshold, the trim stopped, the room cooled, and it started again. Every end was a step back up to the baseline. In 75 hours, two or three buildings stepped up together.
+  - The battery's own up-steps nearly cancelled. A discharge stopping at 7 pm added 55.8 kWh of up-ramp and a charge starting added 27.0 kWh, while a discharge starting at 4 pm took 83.3 kWh away.
+- **Load factor against 0.4.0 live (0.9773 against 0.9559).** The cooling trims account for 0.0158 of the gap: they cut energy across the day, which lowers the daily mean while the daily peak, mostly 8 to 11 pm, stays (on 16 days a trim was running at the peak hour). The battery accounts for 0.0056: it now spends its charge in the 4 to 7 pm price window (137 kWh there against 0.4.0's 86) and has little left for the evening peak that 0.4.0 partly shaved.
+
+Changes:
+
+- **Prompt version 5 (default).**
+  - Adds last hour's measured district draw, the district load before storage now and at the next hour (as yesterday), and each building's cooling trim last hour.
+  - Adds a smoothing strategy:
+    - Hold a trim, once on, until the room is within 0.5 C of its setpoint, then ease it off by at most 0.02 per hour.
+    - Start grid charging small and raise it by at most 0.15 per hour.
+    - Discharge evenly over the top-price hours.
+  - States that ramping counts only steps up. Versions 1 to 4 are unchanged, so recorded runs replay byte for byte.
+- **Scripted version 5 strategy** (`strategy_plan_v5`, `StrategyParamsV5`): the version 5 prompt followed literally, run with `--scripted --prompt-version 5`.
+- **Tuned on the tuning set only.**
+  - `scripts/tune_strategy.py` now defaults to version 5. It searched 18 smoothing settings on the three tuning months under hard constraints: ramping below the baseline, with cost, emissions, discomfort and both peaks no worse than the 0.6.0 tuned strategy on the same months. 8 qualified, and the one with the lowest ramping plus load factor is shipped.
+  - On the tuning months the shipped setting scores ramping 0.9816 against 0.9953 for the 0.6.0 strategy, load factor 0.9517 against 0.9529, cost 0.9089 against 0.9113, emissions 0.9610 against 0.9671, discomfort 0.0310 against 0.0344, and both peaks lower. `--version 4` reruns the 0.6.0 search unchanged.
+- **No ramp rule in the envelope, on the evidence.** A deterministic rule that limited how fast a battery action or a cooling trim could rise was built and tested, then removed. It made things worse: on the tuning months the same strategy scored ramping 0.9886 with it against 0.9816 without, at higher cost. Sending the 0.6.0 live run's own actions through it raised ramping from 1.0174 to 1.0186. A taper only spreads the same rise over more hours, and CityLearn's ramping sums the rises either way. What lowers it is fewer on and off cycles, which the strategy's hold does. The envelope keeps a read-only record of each building's trim for the prompt; its rules are unchanged.
+- **Evening reserve, measured and left off.** Keeping some charge back from the top-price hours for the evening district peak lowers ramping and load factor further: on the tuning months, a reserve of 0.1 gave ramping 0.965 to 0.979 and load factor 0.945 to 0.954. But every reserve tried (0.03, 0.05 and 0.1) raised cost above the 0.6.0 strategy, which the constraints rule out.
+- **Public page.**
+  - A compact "How it works" strip under the headline: the agent decides, the safety envelope checks, CityLearn simulates, CityLearn scores.
+  - A "Run it yourself" section with the local commands, including `hyperbolic serve`, replaces the stale "Replace the sample with a live agent run". The sample banner links to it.
+  - It works in both themes and at phone width, with no sideways page scroll; long commands scroll inside their box. The replay and `docs/data` are unchanged.
+- `hyperbolic serve`'s cost estimate uses the version 5 request size. `PeakTracker` reports last hour's district draw and the next hour's load as yesterday.
+- Tests cover:
+  - the v5 strategy's trim hold, slow release, immediate start and release at the setpoint
+  - the gentle charge start and the even discharge
+  - the v5 observation and prompt
+  - the envelope's trim record
+  - the tracker fields
+  - v5 runs that replay byte for byte and detect a changed observation
+  - a full v5 CityLearn month with ramping below the baseline
+  - 24 hour v4 and v5 CityLearn runs with replay
+  - the new page sections
+
+Results, phase 2 local evaluation month (719 hours). The scripted columns are not model results; the v5 strategy was run once on this month after tuning.
+
+| CityLearn KPI (district) | Baseline | 0.4.0 rule-based | 0.6.0 live, Haiku | 0.6.0 v4 strategy, scripted | 0.7.0 v5 strategy, scripted | 0.7.0 live, Haiku |
+|---|---|---|---|---|---|---|
+| cost_total | 1.000 | 0.9611 | 0.9219 | 0.9057 | 0.9015 | TODO |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9665 | 0.9506 | 0.9430 | TODO |
+| electricity_consumption_total | 1.000 | 1.0073 | 0.9740 | 0.9602 | 0.9523 | TODO |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.0861 | 0.0458 | 0.0424 | TODO |
+| daily_peak_average | 1.000 | 0.9978 | 0.9354 | 0.9193 | 0.9081 | TODO |
+| all_time_peak_average | 1.000 | 1.0000 | 0.9483 | 0.9703 | 0.9597 | TODO |
+| ramping_average | 1.000 | 1.1309 | 1.0174 | 1.0151 | 0.9966 | TODO |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9773 | 0.9661 | 0.9640 | TODO |
+
+The scripted version 5 strategy brings ramping below the baseline (0.9966) and improves on the version 4 strategy on every KPI in the table. Its load factor (0.9640) does not reach the 0.4.0 live run's 0.9559, and like the version 4 strategy its hot discomfort (0.0181) is a little above the baseline's 0.0176. The baseline, the 0.4.0 rule-based controller and the scripted version 4 strategy reproduce their published numbers exactly, and all four runs replay 719 of 719 hours.
+
+
 ## 0.6.0 (2026-10-22)
 
 Goal: the live agent beats the 0.4.0 rule-based controller on cost and emissions without giving back its daily peak, ramping and load factor wins, at equal or better comfort.
