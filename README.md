@@ -8,6 +8,8 @@ Hyperbolic runs [CityLearn](https://github.com/citylearn-project/CityLearn), an 
 
 Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.4.0 Haiku run (see [Results](#results)).
 
+To watch a run live on your own machine instead, see [Watch it live](#watch-it-live).
+
 **This is a simulator project.** Nothing here connects to a real building, BAS, or customer system.
 
 ## Why it is built this way
@@ -195,8 +197,25 @@ python -m hyperbolic run && python -m hyperbolic compare
 | `hyperbolic run` | Runs the supervisor through the envelope. `--model sonnet`, `--budget 5`, `--hours 24` for a short run, `--scripted` for the rule-based policy with no API calls, `--inject-faults` with `--scripted` to exercise clamps and fallback, `--prompt-version 1` or `2` for the 0.2.0 or 0.3.0 prompt. Runs of two days or more need hours + 1 to be a whole number of days (for example 167 or 719), a limit of CityLearn 3.0.2's outage model. |
 | `hyperbolic replay RUN_DIR` | Re-runs a saved run from its files with zero model or simulator calls and reports whether every decision and action matches. Exit code 1 if not. |
 | `hyperbolic compare` | Pairs the latest baseline (from `runs/` or the committed `results/`) with the latest agent run (a live run wins over a scripted one), prints the KPIs and writes the viewer data. `--pair BASELINE AGENT` to choose. |
+| `hyperbolic serve` | Live mode in the browser on 127.0.0.1 (see [Watch it live](#watch-it-live)). `--port 8765`, `--no-browser`. |
 
 `python -m hyperbolic` works the same as `hyperbolic`. A full episode simulates in about 7 seconds; a live run takes as long as 719 model calls.
+
+## Watch it live
+
+```powershell
+.\.venv\Scripts\python -m hyperbolic serve
+```
+
+That starts a small local server at http://127.0.0.1:8765 and opens it in your browser. Pick a duration (24 hours, 1 week, the full month or a custom hour count), a controller (`claude-haiku-5-5`, `claude-sonnet-5-5`, the rule-based controller or the baseline) and a budget. The page shows an estimated cost from your recorded runs before you press Start. Each hour then lands on the same viewer as it finishes: building tiles, running KPIs against the baseline over the same hours, the agent's reason for every hour in a scrolling log, clamps glowing, district draw against the peak target, and the API spend against the budget. Pause, Resume and Stop work between hours, and one run goes at a time.
+
+- **Local only.** The server binds 127.0.0.1, answers only requests addressed to 127.0.0.1 or localhost, and refuses cross-site requests that would start or stop a run. It is built on Python's standard library (`http.server` and Server-Sent Events), so it adds no dependency.
+- **The key stays on the server.** It is read from `TRIAGE_ANTHROPIC_KEY` (or `HYPERBOLIC_ANTHROPIC_KEY`) and never sent to the page, the logs or the run files. Without a key the Claude options are off, and the rule-based and baseline controllers still work.
+- **The budget is enforced on the server**, exactly as `hyperbolic run` does: model calls stop at the cap and the remaining hours keep the baseline action.
+- **Every live run is recorded** in `runs/` in the same format as `hyperbolic run`, so `hyperbolic replay` reproduces it. A stopped run is saved as partial and scored against a baseline over the same hours.
+- **Publish** writes `docs/data` exactly like `hyperbolic compare --pair`, on your disk only. Nothing is committed or pushed.
+
+Options: `--port`, `--runs-dir`, `--docs`, `--no-browser`. Live mode only exists when the page is served by `hyperbolic serve`; the published GitHub Pages replay is unchanged.
 
 ## The replay viewer
 
@@ -214,7 +233,7 @@ Dark by default with a light toggle, built for phones first, and it respects red
 
 ## Tests
 
-`python -m pytest -q` runs fully offline. Envelope rules and runner logic run against a small fake district for speed; the backend, the CLI and the no-control equivalence run against real CityLearn on the shipped dataset; replay and the viewer builder run against CityLearn runs recorded in `tests/fixtures`. Covered: the peak limiter (never above the target in randomized trials, trims recorded as clamps, battery before tank, off for older runs, and a CityLearn run that replays identically with its trims), the combined signal, the peak tracker, the reason length guard, the forecast horizons (6, 12 and 24 hours, the 0.2.0 mislabel), the 24 hour outlook never using unseen data, all three prompt versions, 24 hour and full-month rule-based dry runs on CityLearn, a cooling offset moving indoor temperatures, every envelope rule, malformed and schema-breaking replies, fallback on invalid, missing and refused replies, the budget stop, key handling, deterministic replay and tamper detection, replay with CityLearn not even importable, and byte-identical viewer data from the same files in one process or two.
+`python -m pytest -q` runs fully offline. Envelope rules and runner logic run against a small fake district for speed; the backend, the CLI and the no-control equivalence run against real CityLearn on the shipped dataset; replay and the viewer builder run against CityLearn runs recorded in `tests/fixtures`. Covered: live mode through the real server with fake models (a full run streamed, recorded and replayed identically, the streamed hours matching the replay viewer's data, pause and resume, stop saving a partial run, the budget cap, the key never appearing in any response or file, the 127.0.0.1 binding and host checks, and the Claude options off without a key), the peak limiter (never above the target in randomized trials, trims recorded as clamps, battery before tank, off for older runs, and a CityLearn run that replays identically with its trims), the combined signal, the peak tracker, the reason length guard, the forecast horizons (6, 12 and 24 hours, the 0.2.0 mislabel), the 24 hour outlook never using unseen data, all three prompt versions, 24 hour and full-month rule-based dry runs on CityLearn, a cooling offset moving indoor temperatures, every envelope rule, malformed and schema-breaking replies, fallback on invalid, missing and refused replies, the budget stop, key handling, deterministic replay and tamper detection, replay with CityLearn not even importable, and byte-identical viewer data from the same files in one process or two.
 
 CI (GitHub Actions) runs the tests on Python 3.10 and 3.12 with CPU-only torch, a repository rules check, and an author check that fails if any commit in a push or pull request was not authored by AddisonTech.
 

@@ -155,3 +155,32 @@ def test_viewer_footer_credit():
                        ("https://github.com/AddisonTech/Hyperbolic", "GitHub"), ("https://sixophor.com", "Sixophor")):
         assert f'<a href="{href}">{text}</a>' in html
     assert "Built by" in html
+
+
+def test_scenario_stream_rebuilds_the_replay_scenario(fixture_runs):
+    """Live mode streams hours one at a time; put together they must equal build_scenario."""
+    from hyperbolic.runner import load_jsonl
+    from hyperbolic.viewer import ScenarioStream, build_scenario
+
+    base, agent = fixture_runs
+    names = json.loads((agent / "manifest.json").read_text())["buildings"]
+    stream = ScenarioStream(names)
+    rows = [stream.add(b, a) for b, a in zip(load_jsonl(base / "steps.jsonl"), load_jsonl(agent / "steps.jsonl"))]
+    sc = build_scenario(base, agent)
+    for key in ("hour_of_day", "day", "price", "carbon", "outdoor_c"):
+        assert [r[key] for r in rows] == sc[key]
+    for b in names:
+        assert [r["setpoint_c"][b] for r in rows] == sc["setpoint_c"][b]
+        assert [r["occupied"][b] for r in rows] == sc["occupied"][b]
+    for side in ("baseline", "agent"):
+        for f in ("district_grid_kwh", "cost_usd", "emission_kg", "discomfort_h"):
+            assert [r[side][f] for r in rows] == sc[side][f]
+        for b in names:
+            for f in ("indoor_c", "battery_soc", "dhw_soc", "grid_kwh"):
+                assert [r[side]["buildings"][b][f] for r in rows] == sc[side]["buildings"][b][f]
+    assert [r["agent"]["decision"] for r in rows] == sc["agent"]["decisions"]
+    for b in names:
+        for d in ("cooling", "dhw", "battery"):
+            assert [r["agent"]["actions"][b][d] for r in rows] == sc["agent"]["actions"][b][d]
+    # Running KPI estimates: the baseline scores 1 against itself.
+    assert rows[-1]["kpi"]["baseline"]["cost_total"] == 1.0
