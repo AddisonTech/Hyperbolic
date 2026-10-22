@@ -225,6 +225,27 @@ class StrategyParams:
 
 
 @dataclass(frozen=True)
+class StrategyParamsV5:
+    """Numbers in the prompt version 5 strategy: version 4's, plus how it smooths the district
+    load. strategy_plan_v5 executes it literally and the prompt states them. Chosen on the tuning
+    dataset (scripts/tune_strategy.py), never on the reported month."""
+
+    cold_margin_c: float = 0.5         # an occupied room this far below its setpoint is too cold
+    cold_trim: float = 0.1             # ... and its cooling is cut up to this far below the baseline action
+    cold_ramp_c: float = 1.0           # the cut grows from 0 to cold_trim over this many degrees beyond
+    charge_rate: float = 0.15          # battery fraction per hour when charging from the grid
+    shave: float = 0.9                 # also discharge once district load reaches this share of the forecast peak
+    soc_target: float = 0.95
+    # Smoothing, added in 0.7.0.
+    trim_hold_c: float = 0.5           # once trimmed, keep the trim until the room is within this of its setpoint
+    trim_step: float = 0.02            # release a trim by at most this per hour (deepening is immediate)
+    charge_step: float = 0.15          # raise a grid charge by at most this per hour
+    evening_reserve: float = 0.0       # state of charge kept back in the top-price hours for the evening peak
+    max_step: float = 0.5              # largest storage move per hour, the envelope's rate limit
+    min_move: float = 0.01             # storage moves smaller than this are skipped
+
+
+@dataclass(frozen=True)
 class RuleParamsV2:
     """Knobs of the 0.3.0 rule-based policy for prompt version 2 observations, kept as tuned
     then so the 0.3.0 reference result reproduces."""
@@ -257,7 +278,8 @@ class ScriptedSupervisor:
     headroom, stores spare solar, discharges into high-signal hours sized to each
     building's own load, and can shave the district peak: the 0.4.0 rule-based controller.
     For version 4 it follows that prompt's strategy literally (strategy_plan_v4), which is
-    how the strategy's numbers are chosen offline. Version 2 observations get the 0.3.0
+    how the strategy's numbers are chosen offline, and likewise for version 5
+    (strategy_plan_v5). Version 2 observations get the 0.3.0
     rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
@@ -268,13 +290,15 @@ class ScriptedSupervisor:
 
     def __init__(self, model_key: str = DEFAULT_MODEL, faults: dict[int, str] | None = None,
                  tokens: tuple[int, int] = (0, 0), params: RuleParams | None = None,
-                 params_v2: RuleParamsV2 | None = None, strategy: StrategyParams | None = None) -> None:
+                 params_v2: RuleParamsV2 | None = None, strategy: StrategyParams | None = None,
+                 strategy_v5: StrategyParamsV5 | None = None) -> None:
         self.model_key = model_key
         self.faults = dict(faults or {})
         self.tokens = tokens
         self.params = params or RuleParams()
         self.params_v2 = params_v2 or RuleParamsV2()
         self.strategy = strategy or StrategyParams()
+        self.strategy_v5 = strategy_v5 or StrategyParamsV5()
 
     @staticmethod
     def default_faults(hours: int) -> dict[int, str]:
@@ -295,7 +319,9 @@ class ScriptedSupervisor:
         if fault == "malformed":
             return CallResult('{"reason": "charge batteries", "Building_1": {"battery": 0.4', *self.tokens,
                               stop_reason="end_turn", model="scripted")
-        if "price_plan" in obs:
+        if "smoothing" in obs:
+            reply = strategy_plan_v5(obs, self.strategy_v5)
+        elif "price_plan" in obs:
             reply = strategy_plan_v4(obs, self.strategy)
         elif "signal_outlook" in obs:
             reply = self._policy_v3(obs)
@@ -529,6 +555,88 @@ def strategy_plan_v4(obs: dict, p: StrategyParams | None = None) -> dict:
             cooling = math.ceil(max(0.0, base - trim + 0.001) * 1000) / 1000
             if cooling < base:
                 notes.add("trim cooling in a cold room")
+            else:
+                cooling = None
+        reply[b] = {"cooling": cooling, "dhw": 0.0, "battery": math.trunc(battery * 1000) / 1000}
+    reason = "; ".join(sorted(notes)) if notes else "Nothing stands out, hold storage and meet the cooling load"
+    return {"reason": (reason[0].upper() + reason[1:])[:dc.REASON_TARGET_CHARS], **reply}
+
+
+def strategy_plan_v5(obs: dict, p: StrategyParamsV5 | None = None) -> dict:
+    """The prompt version 5 strategy, step by step: version 4's, smoothed. A cooling trim, once
+    started, is held until the room is nearly back at its setpoint and then released a little each
+    hour; a grid charge starts small and rises a little each hour; the top-price discharge can keep
+    some charge back for the evening district peak."""
+    p = p or StrategyParamsV5()
+    pp, peak, nxt = obs["price_plan"], obs["peak"], obs["next_24h"]
+    top_now = bool(pp["top_price_now"])
+    ahead = pp["top_price_hours_ahead"]
+    hours_to_top = min(ahead) if ahead else None
+    top_left = 1  # top-price hours left in this window, this one included
+    while top_now and top_left in ahead:
+        top_left += 1
+    worst = (float("inf"), float("inf"))
+    key = lambda pr, ca: (worst[0] if pr is None else pr, worst[1] if ca is None else ca)  # noqa: E731
+    now_key = key(pp["now"], obs["carbon_outlook"]["now"])
+    cands = [] if hours_to_top is None else [key(nxt["price"][j - 1], nxt["carbon"][j - 1])
+                                            for j in range(1, hours_to_top)]
+    load_now, forecast = peak["district_load_now_kwh"], peak["forecast_today_kwh"]
+    shave_now = bool(p.shave > 0 and load_now is not None and forecast and load_now >= p.shave * forecast)
+    headroom = peak["headroom_kwh"]
+    caps = {b: s["battery"]["capacity_kwh"] or 0.0 for b, s in obs["buildings"].items()}
+    total_cap = sum(caps.values()) or 1.0
+    reply: dict = {}
+    notes = set()
+    for b, s in sorted(obs["buildings"].items()):
+        bat = s["battery"]
+        cap, fmax, soc = caps[b], bat["max_fraction_per_hour"] or 0.0, bat["soc"]
+        floor = max(bat.get("soc_floor") or 0.0, 0.1)
+        room = max(0.0, p.soc_target - soc - 0.001)
+        spare = max(0.0, soc - floor - 0.001)
+        load = s["load_now_kwh"]
+        last = s["last_action"] or {}
+        lb = last.get("battery") or 0.0
+        battery = 0.0
+        if cap > 0 and load is not None:
+            if top_now and load > 0:
+                battery = -min(fmax, load / cap, max(0.0, spare - p.evening_reserve) / top_left)
+                if battery < 0:
+                    notes.add("discharge evenly over the top-price hours")
+            elif shave_now and load > 0:
+                battery = -min(fmax, load / cap, spare)
+                if battery < 0:
+                    notes.add("shave the district peak")
+            elif load < -0.05:
+                battery = min(fmax, -load / cap, room)
+                if battery > 0:
+                    notes.add("store spare solar")
+            elif bat.get("grid_charging_ok") and room > 0 and hours_to_top is not None:
+                hours_needed = math.ceil(room / p.charge_rate - 1e-9)
+                if sum(1 for c in cands if c < now_key) < hours_needed:
+                    share = None if headroom is None else max(0.0, headroom - 0.02) * caps[b] / total_cap / cap
+                    battery = min(p.charge_rate, fmax, room, share if share is not None else 1.0,
+                                  max(lb, 0.0) + p.charge_step)
+                    if battery > 0:
+                        notes.add("charge gently in a cheap, clean hour before the top price")
+        battery = min(max(lb, 0.0) + p.max_step, max(min(lb, 0.0) - p.max_step, battery))
+        battery = 0.0 if abs(battery) < p.min_move else battery
+        cooling = None
+        base = s["baseline_action"]["cooling"]
+        prev_trim = min(0.0, s.get("cooling_trim_last_hour") or 0.0)
+        gap = s["indoor_vs_setpoint_c"]
+        target = 0.0
+        if s["occupied"] and base and base > 0 and gap is not None:
+            cold = -gap - p.cold_margin_c
+            if cold >= 0:
+                target = -(p.cold_trim if p.cold_ramp_c <= 0 else p.cold_trim * min(1.0, cold / p.cold_ramp_c))
+            if prev_trim < 0 and gap < -p.trim_hold_c:
+                target = min(target, prev_trim)  # hold the trim until the room is nearly back
+        trim = target if target <= prev_trim else min(target, prev_trim + p.trim_step)
+        if base and trim < -0.001 and (gap is None or gap < 0):
+            # The baseline arrives rounded to 3 decimals: keep 0.001 clear of the deviation limit.
+            cooling = math.ceil(max(0.0, base + max(trim, -p.cold_trim) + 0.001) * 1000) / 1000
+            if cooling < base:
+                notes.add("hold a cooling trim in a cold room, easing it off slowly")
             else:
                 cooling = None
         reply[b] = {"cooling": cooling, "dhw": 0.0, "battery": math.trunc(battery * 1000) / 1000}

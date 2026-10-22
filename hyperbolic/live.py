@@ -62,6 +62,7 @@ MAX_BUDGET_USD = 100.0
 LIVE_ASSETS = Path(__file__).parent / "live_assets"
 COMMITTED_BASELINE = Path("results/baseline")
 HEADER = "X-Hyperbolic-Live"
+MAX_BODY = 10_000  # bytes in a POST body
 
 CONTROLLERS = {
     "haiku": {"label": MODELS["haiku"]["id"], "model": True},
@@ -74,8 +75,8 @@ DURATIONS = [
     {"id": "week", "label": "1 week (167 hours)", "hours": 167},
     {"id": "month", "label": "Full month (719 hours)", "hours": dc.EPISODE_HOURS},
 ]
-# Typical prompt version 4 request and reply, for a cost estimate before any run is recorded.
-TYPICAL_TOKENS = (2800, 250)
+# Typical prompt version 5 request and reply, for a cost estimate before any run is recorded.
+TYPICAL_TOKENS = (3000, 250)
 
 
 def key_status(env: dict[str, str] | None = None) -> dict:
@@ -477,9 +478,23 @@ class LiveHandler(http.server.BaseHTTPRequestHandler):
     def _json(self, code: int, data: Any) -> None:
         self._send(code, json.dumps(data, separators=(",", ":"), ensure_ascii=True).encode(), "application/json")
 
+    def _refuse(self, error: str) -> None:
+        """Read and discard the request body, then send a 403. Closing with the body unread
+        makes Windows reset the connection, and the client sees that instead of the 403."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= MAX_BODY:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+        self._json(403, {"error": error})
+
     def _host_ok(self) -> bool:
         if (self.headers.get("Host") or "") not in self.server.allowed_hosts():
-            self._json(403, {"error": "this server only answers on 127.0.0.1 or localhost"})
+            self._refuse("this server only answers on 127.0.0.1 or localhost")
             return False
         return True
 
@@ -567,16 +582,16 @@ class LiveHandler(http.server.BaseHTTPRequestHandler):
             return
         origin = self.headers.get("Origin")
         if origin is not None and origin not in self.server.allowed_origins():
-            return self._json(403, {"error": "cross-origin requests are refused"})
+            return self._refuse("cross-origin requests are refused")
         if self.headers.get(HEADER) != "1":
-            return self._json(403, {"error": f"missing {HEADER} header"})
+            return self._refuse(f"missing {HEADER} header")
         if not (self.headers.get("Content-Type") or "").startswith("application/json"):
             return self._json(415, {"error": "send JSON"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = -1
-        if not 0 <= length <= 10_000:
+        if not 0 <= length <= MAX_BODY:
             return self._json(413, {"error": "request too large"})
         try:
             body = json.loads(self.rfile.read(length) or b"{}")

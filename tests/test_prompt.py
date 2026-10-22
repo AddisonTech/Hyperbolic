@@ -31,13 +31,14 @@ def fake_states(n):
     return out
 
 
-def test_default_prompt_is_version_4_and_the_rule_based_controller_stays_on_3():
-    assert PROMPT_VERSION == 4
-    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 4
+def test_default_prompt_is_version_5_and_the_rule_based_controller_stays_on_3():
+    assert PROMPT_VERSION == 5
+    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 5
     # The rule-based controller is the frozen 0.4.0 reference: prompt version 3, no spread check.
     assert controller_settings(True) == (3, EnvelopeConfig.v040())
-    assert controller_settings(False) == (4, EnvelopeConfig())
+    assert controller_settings(False) == (5, EnvelopeConfig())
     assert controller_settings(True, 4) == (4, EnvelopeConfig())
+    assert controller_settings(True, 5) == (5, EnvelopeConfig())
     assert EnvelopeConfig.v040().spread_check is False and EnvelopeConfig().spread_check is True
 
 
@@ -117,23 +118,23 @@ def test_v2_prompt_states_the_strategy_and_the_rules():
 def test_request_carries_the_observation_for_each_version():
     st = fake_states(1)[0]
     ctx = context_from_state(st)
-    for version in (1, 2, 3, 4):
+    for version in (1, 2, 3, 4, 5):
         obs = observe(version, st, ctx, None, Lookahead())
         req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=version)
         assert observation_from_request(req) == json.loads(json.dumps(obs))
     with pytest.raises(ValueError):
-        observe(5, st, ctx, None, Lookahead())
+        observe(6, st, ctx, None, Lookahead())
 
 
-@pytest.mark.parametrize("rule_based", [True, False])
-def test_rule_policy_charges_cheap_and_discharges_into_the_peak(rule_based):
-    # Fake district: price 0.05 most of the day and 0.25 from hour 16 to 20. rule_based runs the
-    # 0.4.0 rule on prompt version 3; otherwise the version 4 strategy runs on version 4, without
-    # peak shaving, which the fake's flat daytime load would trigger all day.
-    from hyperbolic.model import StrategyParams
+@pytest.mark.parametrize("version", [3, 4, 5])
+def test_rule_policy_charges_cheap_and_discharges_into_the_peak(version):
+    # Fake district: price 0.05 most of the day and 0.25 from hour 16 to 20. Version 3 runs the
+    # 0.4.0 rule; versions 4 and 5 run their scripted strategies, without peak shaving, which the
+    # fake's flat daytime load would trigger all day.
+    from hyperbolic.model import StrategyParams, StrategyParamsV5
 
-    version, cfg = controller_settings(rule_based)
-    sup = ScriptedSupervisor(strategy=StrategyParams(shave=0.0))
+    version, cfg = controller_settings(True, version)
+    sup = ScriptedSupervisor(strategy=StrategyParams(shave=0.0), strategy_v5=StrategyParamsV5(shave=0.0))
     ctl = AgentController(sup, Envelope(cfg), Budget(1.0), prompt_version=version)
     w = NullWriter()
     run_session(FakeDistrict(), ctl, w, hours=48, log=lambda *_: None)

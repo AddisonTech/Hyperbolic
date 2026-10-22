@@ -32,7 +32,7 @@
   <main class="wrap" id="main">
     <div class="sample-banner" id="sample-banner" hidden>
       <span class="tag sample">Sample agent</span>
-      <div><strong>The baseline is a real CityLearn run. The agent side is a sample.</strong> <span class="long">Its replies are scripted rules standing in for the model, run through the same safety envelope on the same CityLearn district, so the replay works before a live agent run exists.</span><span class="short">Scripted replies, no model.</span> <a href="#howto">Replace it with a live run</a>.</div>
+      <div><strong>The baseline is a real CityLearn run. The agent side is a sample.</strong> <span class="long">Its replies are scripted rules standing in for the model, run through the same safety envelope on the same CityLearn district, so the replay works before a live agent run exists.</span><span class="short">Scripted replies, no model.</span> <a href="#run">Run it yourself</a>.</div>
     </div>
 
     <section class="hero" aria-labelledby="headline">
@@ -47,6 +47,16 @@
           <span id="play-hero-label">Play the month</span>
         </button>
       </div>
+    </section>
+
+    <section class="how" aria-labelledby="how-title">
+      <h2 class="how-title" id="how-title">How it works, every simulated hour</h2>
+      <ol class="how-steps">
+        <li class="how-step"><span class="how-num">1</span><div><strong>The agent decides</strong><span>It reads the district, prices and forecasts and proposes cooling, hot water and battery actions as strict JSON.</span></div></li>
+        <li class="how-step"><span class="how-num">2</span><div><strong>The safety envelope checks</strong><span>Plain code enforces ranges, ramps, charge limits, comfort, the price spread and the peak cap, and logs every clamp.</span></div></li>
+        <li class="how-step"><span class="how-num">3</span><div><strong>CityLearn simulates</strong><span>One hour of three buildings: indoor temperature, heat pumps, batteries, hot water and rooftop solar.</span></div></li>
+        <li class="how-step"><span class="how-num">4</span><div><strong>CityLearn scores</strong><span>Its own KPI evaluation compares the month with the no-control reference: cost, carbon, comfort and the grid.</span></div></li>
+      </ol>
     </section>
 
     <section class="stage" id="stage" aria-label="District">
@@ -131,16 +141,26 @@
       <div class="score-grid" id="scorecard"></div>
     </section>
 
-    <section id="howto" aria-labelledby="howto-title">
+    <section id="run" aria-labelledby="run-title">
       <article class="card howto">
-        <h2 class="card-title" id="howto-title">Replace the sample with a live agent run</h2>
-        <p>Everything runs on one machine: CityLearn and the dataset ship with the repository, no simulator server is involved. The key stays in an environment variable. Then rebuild the data and commit <code>docs/data</code>.</p>
-<pre><span class="c"># PowerShell, from the repository folder, Python 3.10 to 3.12</span>
-python -m pip install --no-deps CityLearn==3.0.2
-python -m pip install -e .
-python -m hyperbolic run
-python -m hyperbolic compare
-git add docs/data; git commit -m "Add live agent run"; git push</pre>
+        <h2 class="card-title" id="run-title">Run it yourself</h2>
+        <p>Everything runs on one machine: CityLearn and the dataset ship with the repository, so there is no simulator server. The rule-based and baseline controllers need no key; a model run reads its key from an environment variable and stops at the budget you set.</p>
+<pre><span class="c"># Windows PowerShell, Python 3.10 to 3.12</span>
+git clone https://github.com/AddisonTech/Hyperbolic
+cd Hyperbolic
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install --no-deps CityLearn==3.0.2
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+
+<span class="c"># Watch a run live in your browser on 127.0.0.1</span>
+.\.venv\Scripts\python -m hyperbolic serve
+
+<span class="c"># Or from the command line: a rule-based month,</span>
+<span class="c"># a model month with a key set, then compare</span>
+.\.venv\Scripts\python -m hyperbolic run --scripted
+.\.venv\Scripts\python -m hyperbolic run --budget 2.00
+.\.venv\Scripts\python -m hyperbolic compare</pre>
+        <p class="howto-foot">On macOS or Linux, use <code>python</code> in place of <code>.\.venv\Scripts\python</code>. Every run is saved and <code>hyperbolic replay</code> reproduces it with no model or simulator calls.</p>
       </article>
     </section>
 

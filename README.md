@@ -6,7 +6,7 @@ An AI supervisor that runs a simulated district and tries to beat the no-control
 
 Hyperbolic runs [CityLearn](https://github.com/citylearn-project/CityLearn), an open source district energy simulator, entirely on one machine. Every simulated hour it reads CityLearn's observations, forecasts and prices for all buildings, asks a language model for one action per device, passes the answer through a deterministic safety envelope, and applies what survives. Both the agent and the reference are scored by CityLearn's own KPI evaluation, so the numbers come from the benchmark, not from this project.
 
-Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.6.0 Haiku run (see [Results](#results)).
+Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.6.0 Haiku run (see [Results](#results)). The 0.7.0 live run scored worse and is not published there (see [Version 0.7.0](#version-070)).
 
 To watch a run live on your own machine instead, see [Watch it live](#watch-it-live).
 
@@ -168,9 +168,94 @@ It trails the scripted version 4 strategy, which follows the same prompt literal
 
 73 clamped hours, 0 fallbacks. By rule: battery state of charge in 54 hours (73 clamps), cooling more than 0.15 from the baseline in 14 hours (16 clamps), the comfort rule holding cooling at the baseline in 6 hours (6 clamps), and one battery rate limit; 3 hours had two rules. The spread check and the peak limiter never had to act. The run cost $0.5740 of the $2.00 budget and replays 719 of 719 hours deterministically.
 
+### Version 0.7.0
+
+**Goal:** ramping below the baseline and the load factor back toward 0.4.0, without giving back cost, emissions, comfort or the peaks.
+
+**Why the 0.6.0 live month ramped more.** The month's hourly series in `docs/data` reproduce its ramping (1.0174) and load factor (0.9773) exactly, so they can be taken apart hour by hour. CityLearn's ramping adds up every hour the district draws more than the hour before; a step down costs nothing.
+
+| Driver, 0.6.0 live month | Ramping | Load factor, against 0.4.0 live |
+|---|---|---|
+| Cooling trims switching on and off | +0.0245 | +0.0158 |
+| Battery | -0.0071 | +0.0056 |
+
+- **The trims flickered.** There were 276 trim episodes with a median length of one hour, and 263 ended while the room was still occupied: the room warmed past the threshold, the trim stopped, the room cooled, and it started again. Every end was a step back up, in two or three buildings at once in 75 hours.
+- **The battery nearly cancelled itself on ramping.** Stopping a discharge at 7 pm added 55.8 kWh of up-ramp and starting a charge 27.0 kWh, while starting the 4 pm discharge took 83.3 kWh away.
+- **On load factor, the trims cut energy all day.** That lowers the daily mean while the daily peak, mostly 8 to 11 pm, stays; on 16 days a trim was running at the peak hour.
+- **The battery now empties in the 4 to 7 pm price window** (137 kWh there against 0.4.0's 86), leaving little for the evening peak that 0.4.0 partly shaved.
+
+**What changed:**
+
+- **Prompt version 5** (see [What the agent sees](#what-the-agent-sees)) gives the agent last hour's district draw, the load now and at the next hour, and each building's trim last hour. Its strategy now asks the agent to:
+  - hold a trim until the room is within 0.5 C of its setpoint, then ease it off by at most 0.02 per hour
+  - start charging small and raise it by at most 0.15 per hour
+  - spread the discharge evenly over the top-price hours
+- **The numbers come from the tuning set**, under hard constraints: ramping below the baseline, with cost, emissions, discomfort and both peaks no worse than the 0.6.0 strategy. 8 of 18 settings qualified.
+- **No ramp rule in the envelope.** A deterministic limit on how fast a battery action or a cooling trim may rise was built, tested and removed, because it made results worse:
+  - On the tuning months, the same strategy scored ramping 0.9886 with it and 0.9816 without, at higher cost.
+  - Sending the 0.6.0 live run's own actions through it raised ramping from 1.0174 to 1.0186.
+  - A taper only spreads the same rise over more hours, and the KPI sums the rises either way. Fewer on and off cycles is what lowers it, which is what the strategy's hold does.
+- **An evening reserve** (keeping some charge back for the 8 to 11 pm peak) lowers ramping and load factor further. On the tuning months, a reserve of 0.1 gave ramping 0.965 to 0.979 and load factor 0.945 to 0.954. But every reserve tried, down to 0.03, cost more than the 0.6.0 strategy, so it is off.
+- **The public page** gains a "How it works" strip and a "Run it yourself" section (see [The replay viewer](#the-replay-viewer)).
+
+| CityLearn KPI (district), full month | Baseline | 0.4.0 rule-based | 0.6.0 live, Haiku | 0.6.0 v4 strategy, scripted | 0.7.0 v5 strategy, scripted | 0.7.0 live, Haiku |
+|---|---|---|---|---|---|---|
+| cost_total | 1.000 | 0.9611 | 0.9219 | 0.9057 | 0.9015 | 0.9320 |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9665 | 0.9506 | 0.9430 | 0.9635 |
+| electricity_consumption_total | 1.000 | 1.0073 | 0.9740 | 0.9602 | 0.9523 | 0.9684 |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.0861 | 0.0458 | 0.0424 | 0.0741 |
+| daily_peak_average | 1.000 | 0.9978 | 0.9354 | 0.9193 | 0.9081 | 0.9393 |
+| all_time_peak_average | 1.000 | 1.0000 | 0.9483 | 0.9703 | 0.9597 | 0.9592 |
+| ramping_average | 1.000 | 1.1309 | 1.0174 | 1.0151 | 0.9966 | 1.0358 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9773 | 0.9661 | 0.9640 | 0.9747 |
+| Clamped hours, fallback hours | | 1, 0 | 73, 0 | 1, 0 | 1, 0 | 66, 0 |
+| Model cost | | none | $0.5740 | none | none | $0.6329 |
+
+The "v5 strategy, scripted" column is `hyperbolic run --scripted --prompt-version 5`: the version 5 prompt followed literally by `strategy_plan_v5`, with no model, run once on this month after tuning. It brings ramping below the baseline (0.9966) and improves on the version 4 strategy on every line. It is not a model result. Its load factor (0.9640) does not reach the 0.4.0 live run's 0.9559, and its hot discomfort (0.0181) is a little above the baseline's 0.0176.
+
+**The 0.7.0 live run (`claude-haiku-5-5`, full month, 719 hours, prompt version 5) missed the 0.7 goal.** Ramping, the target, went up, not down: 1.0358, against 1.0174 for 0.6.0 live. The scripted version 5 strategy reached 0.9966 on the same month, so the strategy works when it is followed exactly. The live agent did not hold cooling trims the way the prompt asks (see below).
+
+Against 0.6.0 live it improved emissions (0.9635 against 0.9665), grid import (0.9684 against 0.9740), discomfort (0.0741 against 0.0861: too cool 0.0560 against 0.0680, too warm unchanged at 0.0181) and load factor (0.9747 against 0.9773). Ramping, cost (0.9320 against 0.9219), the daily peak (0.9393 against 0.9354), the all-time peak (0.9592 against 0.9483) and unserved energy in outages got worse. Unserved energy in outages is 0.6877 against the baseline's 0.6844, slightly worse than the baseline: the first run to go past it. Thermal resilience is 0.3698, equal to the baseline.
+
+It still beats the 0.4.0 rule-based controller on cost (0.9320 against 0.9611), emissions (0.9635 against 0.9947), grid import (0.9684 against 1.0073), discomfort (0.0741 against 0.1714), ramping (1.0358 against 1.1309), daily peak (0.9393 against 0.9978), all-time peak (0.9592 against 1.0000) and load factor (0.9747 against 0.9913).
+
+66 clamped hours, 0 fallbacks. By rule: battery state of charge in 51 hours (68 clamps, all charging that would have gone past 0.95, by a median 0.002), the comfort rule in 12 hours (13 clamps: 10 where the agent asked for more cooling than the baseline in a room near the bottom of its band, and 3 rounding differences under 0.001), cooling more than 0.15 from the baseline in 2 hours (3 clamps), and the peak limiter in 1 hour (1 clamp). No hour had two rules. The spread check never had to act. The run cost $0.6329 of the $2.00 budget and replays 719 of 719 hours deterministically.
+
+**Why ramping did not come down.** Trim episodes counted the same way as the 0.6.0 diagnosis above: an hour counts as trimmed when cooling runs more than 0.002 below the baseline action (smaller gaps are rounding), and an episode counts once it has ended within the month.
+
+| Cooling trim episodes | 0.6.0 live (prompt v4) | 0.7.0 live (prompt v5) | 0.7.0 v5 strategy, scripted |
+|---|---|---|---|
+| Episodes | 276 | 237 | 167 |
+| Median length | 1 h | 2 h | 3 h |
+| One hour long | 160 | 108 | 46 |
+| Six hours or longer | 9 | 17 | 45 |
+| Ended while the room was occupied | 263 | 230 | 161 |
+| Ended with the room still more than 0.5 C below its setpoint | 103 | 73 | 0 |
+| Ended within 0.5 C, but dropped more than 0.02 in one hour | 74 | 69 | 4 |
+| Hours where two or more buildings ended a trim together | 47 | 37 | 12 |
+
+Version 5 asks for a trim to be held until the room is within 0.5 C of its setpoint and then eased off by at most 0.02 per hour. It may end at once only when the room reaches its setpoint, empties, or needs no cooling. The live agent held trims longer than in 0.6.0, but 142 of its 237 trim ends broke that rule: 73 ended with the room still too cold, and 69 dropped in one step. The scripted strategy broke it in 4 of 167, all at the edge of the rule: two rooms at their setpoint to within rounding, and two last steps of 0.022. Each hour is a separate model call, and the trim is one number in the observation (`cooling_trim_last_hour`) that the agent often let go. Trims flickered less than in 0.6.0, so the trims alone do not explain why ramping rose above 0.6.0 live. This release does not split that rise further.
+
+**The published viewer stays on the 0.6.0 live run.** The page shows the best live run so far, and 0.7.0 is not it: it is worse than 0.6.0 live on cost, ramping, both peaks and outage energy, and the cost saving the page leads with would drop from 7.8 to 6.8 percent. The 0.7.0 viewer data was built locally and is not published; `docs/data` is unchanged.
+
+**Next for 0.8:** carry the trim's hold state in code instead of relying on the model to remember it. A plan, not yet built:
+
+- The envelope (or the peak tracker) keeps, per building, whether a trim is on and how deep it is.
+- While the room is more than 0.5 C below its setpoint, the trim stays on at least as deep as last hour. Once the room is within 0.5 C, it eases off by at most 0.02 per hour. At or above the setpoint it ends at once, as now.
+- The model can end a trim early only with a stated reason, in its own reply field, logged and shown in the viewer, so a dropped trim is a choice and not a lapse.
+- Each hold is logged with its own rule and reason and replays exactly; older runs replay without it.
+- This is not the ramp rule 0.7.0 removed. That one tapered rises, which only spread them out. This one keeps a trim on, which is what the scripted strategy does.
+- Check it first on the tuning set, then aim for ramping below the baseline on the full live month without giving back cost, emissions, comfort or the peaks against 0.6.0 live.
+
 ## What the agent sees
 
-Prompt version 4 (`hyperbolic/prompt.py`) is the default from 0.6.0. It keeps everything in version 3 and adds:
+Prompt version 5 (`hyperbolic/prompt.py`) is the default from 0.7.0. It keeps everything in version 4 and adds:
+
+- **`smoothing`**: `district_draw_last_hour_kwh` (measured), `district_load_now_kwh` (before storage) and `district_load_next_hour_kwh` (the next hour's load before storage, as yesterday).
+- **`cooling_trim_last_hour`** in each building: how far below the baseline action its cooling ran last hour.
+- **A smoothing strategy.** The goals now say that ramping counts only steps up. Once a trim is on, hold it until the room is within 0.5 C of its setpoint, then ease it off by at most 0.02 per hour. Start grid charging small and raise it by at most 0.15 per hour. Discharge the usable charge evenly over the top-price hours left. The numbers come from `StrategyParamsV5`, the settings chosen on the tuning set.
+
+Prompt version 4, the default in 0.6.0, keeps everything in version 3 and adds:
 
 - **`reference_action`** in each building, with `reference_reason`: what the 0.4.0 rule-based controller would do this hour (`rule_plan_v3`, the same function its runs use). The agent is told it is the bar to beat and that where its plan differs, a point of the strategy should say why.
 - **`price_plan`**: the price now, the 24 hour top and low, `top_price_now`, the top-price hours ahead and `flat_24h`.
@@ -186,13 +271,15 @@ Prompt version 3, the default in 0.4.0, keeps everything in version 2 and adds t
 - **Storage per building:** state of charge, capacity and how far the battery can move in one hour, for the battery and the hot water tank.
 - **A plain strategy:** charge the battery in the cheapest, cleanest hours and with spare solar, discharge into the price peak sized to the building's own load (exports earn nothing), mostly leave the hot water tank alone, keep cooling at the baseline unless a small pre-cool is clearly safe, and hold when nothing stands out.
 
-Nothing reads the dataset ahead of time; the outlook is built only from observations the controller has already received. Prompt versions 1 to 3 are kept unchanged so runs recorded with 0.2.0 to 0.5.0 replay byte for byte, and `--prompt-version 1`, `2` or `3` still selects them.
+Nothing reads the dataset ahead of time; the outlook is built only from observations the controller has already received. Prompt versions 1 to 4 are kept unchanged so runs recorded with 0.2.0 to 0.6.0 replay byte for byte, and `--prompt-version 1` to `4` still selects them.
 
 ## Tuning without peeking at the test month
 
 From 0.6.0 there is a separate 2023 tuning set. `scripts/tuning_data` holds `citylearn_challenge_2023_phase_2_online_evaluation_1` from CityLearn v3.0.2, copied unchanged: the same three buildings, batteries and LSTM models as the reported month, but June, July and August of a different period, with its own weather, loads, solar, carbon intensity and tariff, and no hour in common with the reported month. (`citylearn_challenge_2023_phase_1` is byte for byte the reported month's data, so it is no use for tuning; online evaluation sets 2 and 3 differ from set 1 only in the outage seed.)
 
-`python scripts/tune_strategy.py` runs each of its three months as its own episode and searches the version 4 strategy's numbers (`StrategyParams`: when a room counts as too cold and how far its cooling is trimmed, the charge rate, peak shaving, and whether discharge is spread over the top-price hours), executed literally by `strategy_plan_v4`. A setting qualifies when, averaged over the three months, discomfort is at or below the baseline's, the daily and all-time peaks, ramping and the daily load factor are at or below the baseline's to four decimals, and cost and emissions are both below the 0.4.0 rule-based controller's on the same months. 36 of 216 settings qualified; the one with the lowest cost plus emissions is shipped. On the tuning months it scored cost 0.9113 and emissions 0.9671 against the rule-based controller's 0.9621 and 1.0021, discomfort 0.0344 against 0.1231, daily peak 0.8900, ramping 0.9953 and load factor 0.9529. The reported month was used only to report. The envelope's spread check has nothing to tune: it uses each battery's own efficiency curve and standing loss.
+In 0.7.0, `python scripts/tune_strategy.py` (version 5, the default) searched how `strategy_plan_v5` smooths the load: how long a cooling trim is held, how fast it is eased off and how fast a grid charge may rise (`StrategyParamsV5`). A setting qualified when, averaged over the three tuning months, ramping was below the baseline and cost, emissions, discomfort and both peaks were no worse than the 0.6.0 strategy on the same months; the qualifying setting with the lowest ramping plus load factor won. 8 of 18 qualified. On the tuning months the shipped setting scores ramping 0.9816 and load factor 0.9517 against the 0.6.0 strategy's 0.9953 and 0.9529, with cost 0.9089 against 0.9113, emissions 0.9610 against 0.9671 and discomfort 0.0310 against 0.0344.
+
+In 0.6.0, `python scripts/tune_strategy.py --version 4` ran each of its three months as its own episode and searched the version 4 strategy's numbers (`StrategyParams`: when a room counts as too cold and how far its cooling is trimmed, the charge rate, peak shaving, and whether discharge is spread over the top-price hours), executed literally by `strategy_plan_v4`. A setting qualifies when, averaged over the three months, discomfort is at or below the baseline's, the daily and all-time peaks, ramping and the daily load factor are at or below the baseline's to four decimals, and cost and emissions are both below the 0.4.0 rule-based controller's on the same months. 36 of 216 settings qualified; the one with the lowest cost plus emissions is shipped. On the tuning months it scored cost 0.9113 and emissions 0.9671 against the rule-based controller's 0.9621 and 1.0021, discomfort 0.0344 against 0.1231, daily peak 0.8900, ramping 0.9953 and load factor 0.9529. The reported month was used only to report. The envelope's spread check has nothing to tune: it uses each battery's own efficiency curve and standing loss.
 
 Before 0.6.0 the repository had no other 2023 dataset offline, and the rule-based policy's settings were chosen on the first week of the reported month only (167 hourly decisions) with `python scripts/tune_rules.py`. That controller is now the frozen 0.4.0 reference and keeps those settings. In 0.4.0 its grid covered the signal thresholds for charging and discharging, the charge rate, peak shaving, the battery charge limits, when to stop charging before the month ends, and the limiter's target fraction and forecast window; a setting qualified when, on that week, discomfort was no more than half a point above the baseline and both peaks were at or below the baseline's to four decimals. (Four decimals because the baseline action under control rounds the heat pump fraction, which by itself moves a peak ratio by about 0.00001.)
 
@@ -222,7 +309,7 @@ The baseline action under active control is storage idle and the heat pump at th
 - Key from `HYPERBOLIC_ANTHROPIC_KEY`, falling back to `TRIAGE_ANTHROPIC_KEY`. The key lives only in the environment, never in a file, log or run folder (a test checks this).
 - Model: `--model haiku` (default, `claude-haiku-5-5`) or `--model sonnet` (`claude-sonnet-5-5`). Structured JSON output, low effort, 2000 max tokens.
 - Hard budget per run, `--budget` (default 2.00 USD). Before every call the runner computes that call's worst case (prompt size plus full max tokens). If it could push spending past the budget, model calls stop for the rest of the run and every remaining hour uses the baseline action.
-- Episode length: the full 719 hours. The 0.2.0 live run averaged about 4,700 characters per request and cost 0.23 USD on Haiku. Prompt version 2 adds the 24 hour outlook and the strategy, about 7,400 characters per request, and the 0.3.0 live Haiku month cost 0.39 USD. Prompt version 3 is about 8,600 characters per request; the 0.4.0 live Haiku month cost 0.47 USD, against a hard worst case of about 0.93 USD. Prompt version 4 adds the reference action, the price plan and the battery limits, about 9,650 characters per request: the 0.6.0 live Haiku month cost 0.57 USD, against a hard worst case of about 0.95 USD and the default 2.00 USD budget. Sonnet costs 20 times as much per token: a full Sonnet month should cost roughly 10 to 11 USD, so under a 2.00 USD budget it stops calling the model after about a fifth of the month and the remaining hours use the baseline action. Raise `--budget` (about 12 USD) for a full Sonnet run. Each run logs its exact token cost in `result.json`.
+- Episode length: the full 719 hours. The 0.2.0 live run averaged about 4,700 characters per request and cost 0.23 USD on Haiku. Prompt version 2 adds the 24 hour outlook and the strategy, about 7,400 characters per request, and the 0.3.0 live Haiku month cost 0.39 USD. Prompt version 3 is about 8,600 characters per request; the 0.4.0 live Haiku month cost 0.47 USD, against a hard worst case of about 0.93 USD. Prompt version 4 adds the reference action, the price plan and the battery limits, about 9,650 characters per request: the 0.6.0 live Haiku month cost 0.57 USD, against a hard worst case of about 0.95 USD. Prompt version 5 adds the smoothing view, about 10,430 characters per request: the 0.7.0 live Haiku month cost 0.63 USD, against a hard worst case of about 0.97 USD and the default 2.00 USD budget. Sonnet costs 20 times as much per token: a full Sonnet month should cost roughly 11 to 13 USD, so under a 2.00 USD budget it stops calling the model after about a sixth of the month and the remaining hours use the baseline action. Raise `--budget` (about 14 USD) for a full Sonnet run. Each run logs its exact token cost in `result.json`.
 
 ## How to run it
 
@@ -258,7 +345,7 @@ python -m hyperbolic run && python -m hyperbolic compare
 | Command | What it does |
 |---|---|
 | `hyperbolic baseline` | Runs CityLearn's no-control reference. |
-| `hyperbolic run` | Runs the supervisor through the envelope. `--model sonnet`, `--budget 5`, `--hours 24` for a short run, `--scripted` for the 0.4.0 rule-based controller with no API calls (prompt version 3 and the 0.4.0 envelope), `--scripted --prompt-version 4` for the version 4 strategy executed literally, `--inject-faults` with `--scripted` to exercise clamps and fallback, `--prompt-version 1`, `2` or `3` for the 0.2.0, 0.3.0 or 0.4.0 prompt. Runs of two days or more need hours + 1 to be a whole number of days (for example 167 or 719), a limit of CityLearn 3.0.2's outage model. |
+| `hyperbolic run` | Runs the supervisor through the envelope. `--model sonnet`, `--budget 5`, `--hours 24` for a short run, `--scripted` for the 0.4.0 rule-based controller with no API calls (prompt version 3 and the 0.4.0 envelope), `--scripted --prompt-version 4` or `5` for the version 4 or 5 strategy executed literally, `--inject-faults` with `--scripted` to exercise clamps and fallback, `--prompt-version 1` to `4` for the 0.2.0, 0.3.0, 0.4.0 or 0.6.0 prompt. Runs of two days or more need hours + 1 to be a whole number of days (for example 167 or 719), a limit of CityLearn 3.0.2's outage model. |
 | `hyperbolic replay RUN_DIR` | Re-runs a saved run from its files with zero model or simulator calls and reports whether every decision and action matches. Exit code 1 if not. |
 | `hyperbolic compare` | Pairs the latest baseline (from `runs/` or the committed `results/`) with the latest agent run (a live run wins over a scripted one), prints the KPIs and writes the viewer data. `--pair BASELINE AGENT` to choose, `--out` to write the viewer data elsewhere, `--against RUN` (repeatable) to print another finished run of the same length beside them, for example the rule-based controller; the viewer data is unchanged. |
 | `hyperbolic serve` | Live mode in the browser on 127.0.0.1 (see [Watch it live](#watch-it-live)). `--port 8765`, `--no-browser`. |
@@ -292,12 +379,13 @@ Options: `--port`, `--runs-dir`, `--docs`, `--no-browser`. Live mode only exists
 - Indoor temperature, district grid draw and battery charge in a rolling window that follows the playhead.
 - The agent's one-line reason for every hour, with clamped and fallback hours tagged and each clamp spelled out.
 - The CityLearn KPI scorecard, run cost, call count and clamp and fallback counts.
+- A compact "How it works" strip under the headline (the agent decides, the safety envelope checks, CityLearn simulates, CityLearn scores) and a "Run it yourself" section with the local commands, including `hyperbolic serve`.
 
 Dark by default with a light toggle, built for phones first, and it respects reduced motion. To publish it, turn on GitHub Pages: Settings, Pages, Deploy from a branch, `main`, folder `/docs`.
 
 ## Tests
 
-`python -m pytest -q` runs fully offline. Envelope rules and runner logic run against a small fake district for speed; the backend, the CLI and the no-control equivalence run against real CityLearn on the shipped dataset; replay and the viewer builder run against CityLearn runs recorded in `tests/fixtures`. Covered: live mode through the real server with fake models (a full run streamed, recorded and replayed identically, the streamed hours matching the replay viewer's data, pause and resume, stop saving a partial run, the budget cap, the key never appearing in any response or file, the 127.0.0.1 binding and host checks, and the Claude options off without a key), the peak limiter (never above the target in randomized trials, trims recorded as clamps, battery before tank, off for older runs, and a CityLearn run that replays identically with its trims), the combined signal, the peak tracker, the reason length guard, the forecast horizons (6, 12 and 24 hours, the 0.2.0 mislabel), the 24 hour outlook never using unseen data, all four prompt versions, the version 4 reference action equal to what the rule-based controller replies, the spread check (blocked at the top price with its reason, allowed when the coming peak pays, never blocked by a flat weekend, standing losses, spare solar, off for older runs and the rule-based reference), the indoor temperature being the one CityLearn simulated, 24 hour and full-month rule-based dry runs on CityLearn (the full month must still score the 0.4.0 cost, emissions, daily peak, ramping and load factor), a 24 hour version 4 run on CityLearn that replays identically, recorded version 4 runs that replay byte for byte and detect a changed reference policy, a cooling offset moving indoor temperatures, every envelope rule, malformed and schema-breaking replies, fallback on invalid, missing and refused replies, the budget stop, key handling, deterministic replay and tamper detection, replay with CityLearn not even importable, and byte-identical viewer data from the same files in one process or two.
+`python -m pytest -q` runs fully offline. Envelope rules and runner logic run against a small fake district for speed; the backend, the CLI and the no-control equivalence run against real CityLearn on the shipped dataset; replay and the viewer builder run against CityLearn runs recorded in `tests/fixtures`. Covered: live mode through the real server with fake models (a full run streamed, recorded and replayed identically, the streamed hours matching the replay viewer's data, pause and resume, stop saving a partial run, the budget cap, the key never appearing in any response or file, the 127.0.0.1 binding and host checks, and the Claude options off without a key), the peak limiter (never above the target in randomized trials, trims recorded as clamps, battery before tank, off for older runs, and a CityLearn run that replays identically with its trims), the combined signal, the peak tracker, the reason length guard, the forecast horizons (6, 12 and 24 hours, the 0.2.0 mislabel), the 24 hour outlook never using unseen data, all five prompt versions, the version 4 reference action equal to what the rule-based controller replies, the version 5 smoothing view and strategy (trim hold, slow release, release at the setpoint, gentle charge start, even discharge), a full version 5 CityLearn month with ramping below the baseline, version 5 runs that replay byte for byte and detect a changed observation, the public page's How it works and Run it yourself sections, the spread check (blocked at the top price with its reason, allowed when the coming peak pays, never blocked by a flat weekend, standing losses, spare solar, off for older runs and the rule-based reference), the indoor temperature being the one CityLearn simulated, 24 hour and full-month rule-based dry runs on CityLearn (the full month must still score the 0.4.0 cost, emissions, daily peak, ramping and load factor), a 24 hour version 4 run on CityLearn that replays identically, recorded version 4 runs that replay byte for byte and detect a changed reference policy, a cooling offset moving indoor temperatures, every envelope rule, malformed and schema-breaking replies, fallback on invalid, missing and refused replies, the budget stop, key handling, deterministic replay and tamper detection, replay with CityLearn not even importable, and byte-identical viewer data from the same files in one process or two.
 
 CI (GitHub Actions) runs the tests on Python 3.10 and 3.12 with CPU-only torch, a repository rules check, and an author check that fails if any commit in a push or pull request was not authored by AddisonTech.
 
@@ -305,8 +393,10 @@ CI (GitHub Actions) runs the tests on Python 3.10 and 3.12 with CPU-only torch, 
 
 - **Simulator only.** CityLearn models buildings with data-driven load profiles and an LSTM for indoor temperature. Beating its reference is evidence worth investigating, not proof of field savings.
 - **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. In 0.6.0 it beat it on every one of those. From 0.6.0 the rule-based check is frozen at its 0.4.0 settings so the bar does not move.
-- **The scripted version 4 strategy is not a model result either.** It shows that the strategy the agent is given beats the rule-based controller when followed literally. A live model reads the same strategy and may follow it more or less closely.
+- **The scripted version 4 and 5 strategies are not model results either.** They show that the strategy the agent is given beats the rule-based controller when followed literally. A live model reads the same strategy and may follow it more or less closely.
 - **The peak limiter uses this hour's load.** It reads the draw CityLearn is about to simulate for this hour (plug load, solar, hot water demand, cooling), the equivalent of a meter reading in a real building. The forecast of the day's peak is built only from past days. The agent itself sees only the same values the limiter uses, never the rest of the day.
+- **Ramping is a sum of rises.** Smoothing that only spreads a rise over more hours does not lower it, which is why 0.7.0 holds trims instead of tapering them in the envelope. The remaining up-ramp is mostly the baseline's own evening rise and the end of the top-price discharge.
+- **The live agent does not carry a plan from hour to hour.** Each hour is a separate call. In 0.7.0 it was asked to hold cooling trims across hours and broke that in 142 of 237 trim ends (the scripted strategy: 4 of 167), so ramping rose to 1.0358 where the scripted strategy reached 0.9966. The plan for 0.8 is to keep the hold in code (see [Version 0.7.0](#version-070)).
 - **Tuned on one other dataset.** From 0.6.0 the strategy's numbers come from three summer months of the CityLearn 2023 online evaluation set: other weather, loads, carbon and tariff, but the same three buildings and LSTM models, so it says nothing about other building types. The 0.4.0 rule-based controller still carries settings chosen on the first week of the reported month.
 - **The reference is a modest bar.** No storage use and an ideal-load heat pump. Any sensible battery and tank schedule should beat it on cost. The interesting questions are emissions, peaks and comfort at the same time.
 - **The comfort reference is not perfect.** CityLearn's own no-control run already leaves 17 percent of occupied hours outside the band, mostly too cool: CityLearn's LSTM runs the rooms colder than the ideal load data assumes. Trimming cooling in those rooms is the largest single gain in 0.6.0, and it rests on that model.

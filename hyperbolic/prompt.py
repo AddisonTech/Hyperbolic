@@ -16,6 +16,11 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      and how far each room is from its setpoint, now that the indoor temperature is the
      one CityLearn simulated. The strategy puts price first and carbon second, holds the
      battery for the top-price hours, and trims cooling in rooms that are too cold.
+  5  v0.7.0. Adds what smoothing needs: last hour's measured district draw, the district
+     load before storage now and (as yesterday) at the next hour, and each building's
+     cooling trim last hour. The strategy holds a trim until the
+     room is nearly back at its setpoint and eases it off slowly, starts grid charging
+     small and raises it a little each hour, and spreads discharge over the top-price hours.
 """
 
 from __future__ import annotations
@@ -24,12 +29,12 @@ import json
 
 from . import district as dc
 from .envelope import Decision, Envelope, EnvelopeConfig, StepContext, proposal_json_schema
-from .model import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, MODELS, StrategyParams, rule_plan_v3
+from .model import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, MODELS, StrategyParams, StrategyParamsV5, rule_plan_v3
 from .signals import charge_spread, combined_signal
 
 
-PROMPT_VERSION = 4
-PROMPT_VERSIONS = (1, 2, 3, 4)
+PROMPT_VERSION = 5
+PROMPT_VERSIONS = (1, 2, 3, 4, 5)
 
 
 def _r(v, nd=3):
@@ -496,6 +501,104 @@ Reply with one JSON object only, matching the schema. "reason" is one plain sent
 reply invalid."""
 
 
+def build_observation_v5(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
+                         envelope: Envelope | None) -> dict:
+    """Version 5: version 4 plus what the agent needs to smooth the district load."""
+    obs = build_observation_v4(state, ctx, last, look, envelope)
+    pk = ctx.peak
+    obs["smoothing"] = {
+        "district_draw_last_hour_kwh": None if pk is None else _r(pk.last_hour_grid_kwh, 2),
+        "district_load_now_kwh": None if pk is None else _r(pk.load_now_kwh, 2),
+        "district_load_next_hour_kwh": None if pk is None else _r(pk.next_hour_load_kwh, 2),
+    }
+    for b in state["buildings"]:
+        trim = 0.0 if envelope is None else envelope.trims.get(b, 0.0)
+        obs["buildings"][b]["cooling_trim_last_hour"] = _r(min(0.0, trim), 3)
+    return obs
+
+
+def system_prompt_v5(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    dev = ("" if cfg.cooling_max_deviation is None else
+           f"\n- cooling more than {cfg.cooling_max_deviation:g} away from the baseline_action")
+    guard = ("\n- extra cooling in an unoccupied building already near the bottom of its band"
+             if cfg.overcool_guard_unoccupied else "")
+    peak = ("\n- battery then tank charging, so district load stays at or below peak.target_kwh"
+            if cfg.peak_limit else "")
+    spread = ("\n- grid charging of a battery when grid_charging_ok is false (spare solar may still be stored)"
+              if cfg.spread_check else "")
+    sp = StrategyParamsV5()  # the strategy's numbers, chosen on the tuning dataset
+    full = sp.cold_margin_c + sp.cold_ramp_c
+    reserve = ("" if sp.evening_reserve <= 0 else
+               f" Keep {sp.evening_reserve:g} of state of charge back for the evening district peak.")
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings ({dc.DATASET_NAME}, CityLearn). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
+
+Goals, in this order, graded by CityLearn's own KPIs over the month against the no-control reference \
+(storage idle, heat pump meeting the ideal load):
+1. Comfort: no more discomfort than the reference. Discomfort is any occupied hour with indoor \
+temperature outside setpoint +/- {cfg.comfort_band_k:g} C.
+2. Peaks and smoothness: keep the district's daily peak, its daily load factor and its ramping at or \
+better than the reference. Ramping counts every hour the district draws more than the hour before, \
+so a step up costs and a step down does not.
+3. Cost first, then carbon: lower electricity cost and lower emissions than the reference. Each \
+building's cost counts equally, whatever its size.
+
+What you see:
+- reference_action in each building: what the 0.4.0 rule-based controller would do this hour, \
+with reference_reason. It is the bar to beat on cost and carbon. Compare your plan with it: where \
+you differ, a point of the strategy below should say why.
+- price_plan: the price now, the 24 hour top and low, top_price_now (this is one of the most \
+expensive hours), top_price_hours_ahead (hours ahead at the top price) and flat_24h (no price \
+difference in view, as on weekends).
+- battery: soc, soc_floor (the battery cannot go below it), usable_kwh above the floor, capacity, \
+max_fraction_per_hour, round_trip_min (the share of a charge that comes back at worst) and \
+grid_charging_ok (false when no price in the next 24 hours pays back the losses and a cheaper \
+hour is still coming).
+- indoor_c is the measured room temperature; indoor_vs_setpoint_c is how far it is from the \
+setpoint; cooling_trim_last_hour is how far below baseline_action you ran cooling last hour.
+- smoothing: district_draw_last_hour_kwh (measured), district_load_now_kwh (before storage), \
+district_load_next_hour_kwh (the next hour's load before storage, as yesterday).
+- peak: target_kwh, headroom_kwh, forecast_today_kwh.
+- signal_outlook and next_24h: price and carbon by hour. Carbon is the same hour yesterday.
+
+Strategy:
+1. Comfort and cooling. An occupied room more than {sp.cold_margin_c:g} C below its setpoint is \
+overcooled: cut its cooling below baseline_action, from 0 at {sp.cold_margin_c:g} C below the \
+setpoint to {sp.cold_trim:g} at {full:g} C or more below. Once a trim is on, hold it until the room \
+is within {sp.trim_hold_c:g} C of its setpoint, then ease it off by at most {sp.trim_step:g} per hour. \
+Switching a trim off at once steps the load up. Never cool less when the room is at or above its \
+setpoint. Otherwise use null.
+2. Hold the battery for the top-price hours. When top_price_now is true, discharge the usable charge \
+evenly over the top-price hours left, each hour no more than the building's load_now_kwh (power \
+sent back to the grid earns nothing).{reserve} Do not discharge in cheaper hours before them, except \
+to keep district load down: once district_load_now_kwh reaches {sp.shave:g} x forecast_today_kwh, \
+discharge to cover the building's own load. On flat_24h days leave the battery idle.
+3. Charge so each battery is near {sp.soc_target:g} when the top-price hours start: only when \
+grid_charging_ok is true, in the cheapest hours with the lowest carbon (usually the early morning), \
+up to about {sp.charge_rate:g} of capacity per hour, starting small and rising by at most \
+{sp.charge_step:g} per hour, within headroom_kwh. Store spare solar any time.
+4. Never charge at the top price. Leave the hot water tank at 0.
+
+Actions per building, use null to keep the baseline action:
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
+
+A safety envelope checks every value before it is applied. It will clamp:
+- any value outside its range or CityLearn's action space
+- any move larger than {cfg.cooling_rate_per_step:g} (cooling), {cfg.dhw_rate_per_step:g} (dhw) or \
+{cfg.battery_rate_per_step:g} (battery) per hour, measured from last hour's action or this hour's baseline
+- charge that would leave a battery or tank outside {cfg.soc_min:g} to {cfg.soc_max:g} state of charge{dev}
+- in occupied hours within {cfg.comfort_margin_k:g} C of a comfort band edge, cooling below the baseline \
+when warm or above it when cool{guard}{spread}{peak}
+An invalid reply uses the baseline action everywhere for that hour. Clamps are logged against you.
+
+Reply with one JSON object only, matching the schema. "reason" is one plain sentence of at most \
+{dc.REASON_TARGET_CHARS} characters. A reason over {dc.REASON_MAX_CHARS} characters makes the whole \
+reply invalid."""
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -506,6 +609,8 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v3(state, ctx, last, look, envelope)
     if version == 4:
         return build_observation_v4(state, ctx, last, look, envelope)
+    if version == 5:
+        return build_observation_v5(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
 
@@ -520,7 +625,7 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
                   max_tokens: int = DEFAULT_MAX_TOKENS, effort: str = DEFAULT_EFFORT,
                   prompt_version: int = 1) -> dict:
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
-              4: system_prompt_v4}[prompt_version](cfg, buildings)
+              4: system_prompt_v4, 5: system_prompt_v5}[prompt_version](cfg, buildings)
     return {
         "model": MODELS[model_key]["id"],
         "max_tokens": max_tokens,

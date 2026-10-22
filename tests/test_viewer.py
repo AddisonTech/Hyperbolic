@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -184,3 +185,16 @@ def test_scenario_stream_rebuilds_the_replay_scenario(fixture_runs):
             assert [r["agent"]["actions"][b][d] for r in rows] == sc["agent"]["actions"][b][d]
     # Running KPI estimates: the baseline scores 1 against itself.
     assert rows[-1]["kpi"]["baseline"]["cost_total"] == 1.0
+
+
+def test_page_explains_how_it_works_and_how_to_run_it():
+    html = (Path(__file__).parents[1] / "docs" / "index.html").read_text(encoding="utf-8")
+    assert "Replace the sample with a live agent run" not in html and 'id="howto"' not in html
+    steps = re.findall(r'<li class="how-step">.*?<strong>(.*?)</strong>', html)
+    assert steps == ["The agent decides", "The safety envelope checks", "CityLearn simulates", "CityLearn scores"]
+    run = html[html.index('<section id="run"'):html.index("</section>", html.index('<section id="run"'))]
+    for cmd in ("pip install --no-deps CityLearn==3.0.2", 'pip install -e ".[dev]"', "-m hyperbolic serve",
+                "-m hyperbolic run --scripted", "-m hyperbolic compare"):
+        assert cmd in run, cmd
+    assert '<a href="#run">Run it yourself</a>' in html  # the sample banner points at it
+    assert chr(0x2014) not in html
