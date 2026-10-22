@@ -31,15 +31,20 @@ def fake_states(n):
     return out
 
 
-def test_default_prompt_is_version_5_and_the_rule_based_controller_stays_on_3():
-    assert PROMPT_VERSION == 5
-    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 5
+def test_default_prompt_is_version_6_and_the_rule_based_controller_stays_on_3():
+    assert PROMPT_VERSION == 6
+    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 6
     # The rule-based controller is the frozen 0.4.0 reference: prompt version 3, no spread check.
     assert controller_settings(True) == (3, EnvelopeConfig.v040())
-    assert controller_settings(False) == (5, EnvelopeConfig())
-    assert controller_settings(True, 4) == (4, EnvelopeConfig())
-    assert controller_settings(True, 5) == (5, EnvelopeConfig())
+    assert controller_settings(False) == (6, EnvelopeConfig())
+    # Versions before 6 keep the 0.7.0 rules; only version 6 knows the envelope holds trims.
+    assert controller_settings(True, 4) == (4, EnvelopeConfig.v070())
+    assert controller_settings(True, 5) == (5, EnvelopeConfig.v070())
+    assert controller_settings(False, 5) == (5, EnvelopeConfig.v070())
+    assert controller_settings(True, 6) == (6, EnvelopeConfig())
     assert EnvelopeConfig.v040().spread_check is False and EnvelopeConfig().spread_check is True
+    assert EnvelopeConfig().trim_hold is True
+    assert EnvelopeConfig.v070().trim_hold is False and EnvelopeConfig.v040().trim_hold is False
 
 
 def test_lookahead_places_forecasts_at_their_real_horizons():
@@ -118,15 +123,15 @@ def test_v2_prompt_states_the_strategy_and_the_rules():
 def test_request_carries_the_observation_for_each_version():
     st = fake_states(1)[0]
     ctx = context_from_state(st)
-    for version in (1, 2, 3, 4, 5):
+    for version in (1, 2, 3, 4, 5, 6):
         obs = observe(version, st, ctx, None, Lookahead())
         req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=version)
         assert observation_from_request(req) == json.loads(json.dumps(obs))
     with pytest.raises(ValueError):
-        observe(6, st, ctx, None, Lookahead())
+        observe(7, st, ctx, None, Lookahead())
 
 
-@pytest.mark.parametrize("version", [3, 4, 5])
+@pytest.mark.parametrize("version", [3, 4, 5, 6])
 def test_rule_policy_charges_cheap_and_discharges_into_the_peak(version):
     # Fake district: price 0.05 most of the day and 0.25 from hour 16 to 20. Version 3 runs the
     # 0.4.0 rule; versions 4 and 5 run their scripted strategies, without peak shaving, which the

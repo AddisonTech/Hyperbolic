@@ -55,7 +55,7 @@ class ExtraCooling:
 def test_cooling_actions_change_the_building():
     """Would have caught a dead HVAC path: a cooling offset through the envelope moves temperatures."""
     _, base = _run(BaselineController(), False)
-    env = Envelope(EnvelopeConfig(overcool_guard_unoccupied=False))
+    env = Envelope(EnvelopeConfig(overcool_guard_unoccupied=False, trim_hold=False))
     _, more = _run(AgentController(ExtraCooling(0.15), env, Budget(1.0)), True)
     _, less = _run(AgentController(ExtraCooling(-0.15), env, Budget(1.0)), True)
     sent = [s for s in more if s["state"]["baseline"]["Building_1"]["cooling"] < 0.8]
@@ -133,7 +133,7 @@ def test_indoor_temperature_is_the_one_citylearn_simulated():
     comfort rule never saw what the heat pump actually did."""
     import pandas as pd
 
-    env = Envelope(EnvelopeConfig(overcool_guard_unoccupied=False, cooling_max_deviation=None))
+    env = Envelope(EnvelopeConfig(overcool_guard_unoccupied=False, cooling_max_deviation=None, trim_hold=False))
     _, less = _run(AgentController(ExtraCooling(-0.3), env, Budget(1.0)), True, hours=47)
     for b in ("Building_1", "Building_2", "Building_3"):
         dataset = pd.read_csv(dc.dataset_dir() / f"{b}.csv")["indoor_dry_bulb_temperature"]
@@ -183,3 +183,43 @@ def test_v5_strategy_full_month_brings_ramping_below_the_baseline():
     assert k["ramping_average"] < 1.0
     assert k["cost_total"] < 0.9611 and k["carbon_emissions_total"] < 0.9947 and k["discomfort_proportion"] < 0.1714
     assert k["daily_peak_average"] < 1.0 and k["all_time_peak_average"] < 1.0
+
+
+@needs_citylearn
+def test_v6_dry_run_with_the_trim_hold_and_replay(tmp_path):
+    """24 hours of prompt version 6 (the version 5 strategy, the trim hold on), and replay."""
+    from hyperbolic.sim import CityLearnSimulator
+
+    version, cfg = controller_settings(rule_based=True, prompt_version=6)
+    assert cfg.trim_hold is True
+    ctl = AgentController(ScriptedSupervisor(), Envelope(cfg), Budget(2.0), prompt_version=version)
+    run_dir = tmp_path / "v6"
+    res = run_session(CityLearnSimulator(control=True), ctl, RunWriter(run_dir), hours=HOURS, log=quiet,
+                      sim_info={"kind": "citylearn", "control": True})
+    assert res["steps"] == HOURS and res["fallback_steps"] == 0
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["supervisor"]["prompt_version"] == 6 and manifest["envelope"]["trim_hold"] is True
+    calls = load_jsonl(run_dir / "calls.jsonl")
+    obs = observation_from_request(calls[5]["request"])
+    assert {"strategy_battery", "cooling_trim_held"} <= set(obs["buildings"]["Building_1"])
+    assert "reference_action" not in json.dumps(obs) and "end_trim" in calls[5]["request"]["system"]
+    rep = replay_run(run_dir)
+    assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == HOURS
+
+
+@needs_citylearn
+def test_v6_strategy_full_month_with_the_trim_hold():
+    """The scripted version 5 strategy through the 0.8.0 rules: ramping still below the baseline,
+    still ahead of the 0.4.0 rule-based controller, and close to its 0.7.0 month on every KPI."""
+    from hyperbolic.sim import CityLearnSimulator
+
+    version, cfg = controller_settings(rule_based=True, prompt_version=6)
+    ctl = AgentController(ScriptedSupervisor(), Envelope(cfg), Budget(2.0), prompt_version=version)
+    w = NullWriter()
+    res = run_session(CityLearnSimulator(control=True), ctl, w, hours=dc.EPISODE_HOURS, log=quiet)
+    k = res["district_kpis"]
+    assert res["complete"] and res["fallback_steps"] == 0
+    assert k["ramping_average"] < 0.9966  # the version 5 month under the 0.7.0 rules
+    assert k["cost_total"] < 0.9611 and k["carbon_emissions_total"] < 0.9947 and k["discomfort_proportion"] < 0.1714
+    assert abs(k["cost_total"] - 0.9015) < 0.001 and abs(k["discomfort_proportion"] - 0.0424) < 0.002
+    assert any(h["action"] == "hold" for s in w.steps for h in s["decision"].get("holds", []))

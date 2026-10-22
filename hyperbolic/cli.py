@@ -174,7 +174,8 @@ def _against(run_dir: Path, hours: int) -> tuple[str, dict, Path]:
         raise ValueError(f"it covers {r.get('steps')} hours, the compared runs {hours}")
     sup = m.get("supervisor") or {}
     if sup.get("kind") == "scripted":
-        label = "rule-based" if int(sup.get("prompt_version", 1)) <= RULE_PROMPT_VERSION else "v4 script"
+        pv = int(sup.get("prompt_version", 1))
+        label = "rule-based" if pv <= RULE_PROMPT_VERSION else f"v{pv} script"
     else:
         label = str(sup.get("model_key") or sup.get("kind"))
     return label, r.get("district_kpis") or {}, run_dir
@@ -214,8 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --scripted, send a bad reply now and then to exercise clamps and fallback")
     r.add_argument("--prompt-version", type=int, default=None, choices=PROMPT_VERSIONS,
                    help=f"observation and prompt version (default: {PROMPT_VERSION}; with --scripted, "
-                        f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while version 4 "
-                        "runs the version 4 strategy literally)")
+                        f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while versions 4 and 5 "
+                        "run their strategies literally and version 6 runs the version 5 strategy with the "
+                        "trim hold)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")

@@ -88,17 +88,31 @@ def _actions(run: dict, n: int, buildings: list[str]) -> dict:
 
 def _decision(s: dict) -> dict:
     d = s.get("decision") or {}
-    return {
+    out = {
         "status": d.get("status", "ok"),
         "reason": d.get("reason") or "",
         "fallback": d.get("fallback"),
         "clamps": [{"point": c["point"], "rule": c["rule"], "requested": c["requested"],
                     "applied": c["applied"], "reason": c["reason"]} for c in d.get("clamps") or []],
     }
+    # Cooling trims the model ended early, with its reason (0.8.0). Present only when there are
+    # some, so the viewer data of older runs is unchanged.
+    ends = [{"building": h["building"], "reason": h["reason"]} for h in d.get("holds") or []
+            if h.get("action") == "end_early"]
+    if ends:
+        out["trim_ends"] = ends
+    return out
 
 
 def _decisions(run: dict, n: int) -> list[dict]:
     return [_decision(s) for s in run["steps"][:n]]
+
+
+def _trim_end_count(manifest: dict, decisions: list[dict]) -> dict:
+    """How many cooling trims the model ended early, for runs recorded with the trim hold."""
+    if not (manifest.get("envelope") or {}).get("trim_hold"):
+        return {}
+    return {"trim_ends_early": sum(len(d.get("trim_ends", [])) for d in decisions)}
 
 
 def _pct(agent: float | None, base: float | None) -> float | None:
@@ -184,6 +198,7 @@ def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
             "fallback_hours": sum(1 for d in decisions if d["status"] == "fallback"),
             "budget_stopped": bool(ar.get("budget_stopped")),
             "envelope": am.get("envelope"),
+            **_trim_end_count(am, decisions),
         },
         "headline": headline(base["result"].get("district_kpis") or {}, ar.get("district_kpis") or {}),
     }

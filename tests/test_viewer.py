@@ -198,3 +198,33 @@ def test_page_explains_how_it_works_and_how_to_run_it():
         assert cmd in run, cmd
     assert '<a href="#run">Run it yourself</a>' in html  # the sample banner points at it
     assert chr(0x2014) not in html
+
+
+def test_viewer_shows_trims_the_model_ended_early(fixture_runs, tmp_path):
+    import shutil
+
+    from hyperbolic.viewer import build_scenario
+
+    base, agent = fixture_runs
+    run = tmp_path / "agent"
+    shutil.copytree(agent, run)
+    m = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    m["envelope"]["trim_hold"] = True
+    (run / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    lines = (run / "steps.jsonl").read_text(encoding="utf-8").splitlines()
+    rec = json.loads(lines[3])
+    rec["decision"]["holds"] = [
+        {"building": "Building_2", "action": "end_early", "depth_before": 0.06, "depth_after": 0.0,
+         "reason": "Outage ahead, keep the room cool"},
+        {"building": "Building_1", "action": "hold", "depth_before": 0.05, "depth_after": 0.05, "reason": "held"}]
+    lines[3] = json.dumps(rec)
+    (run / "steps.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    s = build_scenario(base, run)
+    assert s["agent"]["decisions"][3]["trim_ends"] == [{"building": "Building_2",
+                                                       "reason": "Outage ahead, keep the room cool"}]
+    assert all("trim_ends" not in d for i, d in enumerate(s["agent"]["decisions"]) if i != 3)
+    assert s["agent_run"]["trim_ends_early"] == 1
+    assert "trim_ends_early" not in build_scenario(base, agent)["agent_run"]  # older runs: unchanged
+    root = Path(__file__).parents[1]
+    assert "trim ended early" in (root / "docs" / "assets" / "app.js").read_text(encoding="utf-8")
+    assert "trim ended early" in (root / "hyperbolic" / "live_assets" / "live.js").read_text(encoding="utf-8")
