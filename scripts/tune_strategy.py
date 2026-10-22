@@ -3,6 +3,7 @@
     python scripts/tune_strategy.py                # version 5 grid (0.7.0)
     python scripts/tune_strategy.py --quick        # the shipped version 5 defaults only
     python scripts/tune_strategy.py --version 4    # the 0.6.0 version 4 search, as it was run
+    python scripts/tune_strategy.py --version 6    # 0.8.0 check: the trim hold, nothing tuned
 
 Tuning set: citylearn_challenge_2023_phase_2_online_evaluation_1 from CityLearn v3.0.2, copied
 unchanged into scripts/tuning_data. It has the same three buildings, batteries and LSTM models as
@@ -23,6 +24,12 @@ candidate qualifies when, averaged over the three
 months, ramping is below the baseline and cost, emissions, discomfort and both peaks are no worse
 than the 0.6.0 tuned version 4 strategy on the same months. The qualifying candidate with the
 lowest ramping plus daily load factor wins, cost plus emissions breaking ties.
+
+Version 6 (0.8.0) tunes nothing. The envelope's trim hold takes its numbers from the version 5
+strategy (hold within 0.5 C, ease by 0.02 per hour), and the check runs the shipped version 5
+strategy through the 0.7.0 rules and through the 0.8.0 rules (prompt version 6, trim hold on),
+so its effect is measured on the tuning months before anything is reported on the test month.
+The version 4 and 5 searches run with the 0.7.0 rules they were made with.
 """
 
 from __future__ import annotations
@@ -100,8 +107,8 @@ def month_datasets(out: Path) -> list[Path]:
 
 
 def kpis(job: tuple[str, dict | None, str]) -> dict:
-    """job: (kind, params or None, schema path). kind is baseline, rule, strategy (version 4) or
-    strategy5 (version 5)."""
+    """job: (kind, params or None, schema path). kind is baseline, rule, strategy (version 4),
+    strategy5 (version 5) or strategy6 (version 5's strategy with the 0.8.0 trim hold)."""
     import torch
 
     torch.set_num_threads(1)  # one simulation per process
@@ -114,12 +121,16 @@ def kpis(job: tuple[str, dict | None, str]) -> dict:
         controller = AgentController(ScriptedSupervisor(), Envelope(EnvelopeConfig.v040()), Budget(1.0), prompt_version=3)
         control = True
     elif kind == "strategy":
-        controller = AgentController(ScriptedSupervisor(strategy=StrategyParams(**params)), Envelope(EnvelopeConfig()),
-                                     Budget(1.0), prompt_version=4)
+        controller = AgentController(ScriptedSupervisor(strategy=StrategyParams(**params)),
+                                     Envelope(EnvelopeConfig.v070()), Budget(1.0), prompt_version=4)
         control = True
-    else:
-        controller = AgentController(ScriptedSupervisor(strategy_v5=StrategyParamsV5(**params)), Envelope(EnvelopeConfig()),
-                                     Budget(1.0), prompt_version=5)
+    elif kind == "strategy5":
+        controller = AgentController(ScriptedSupervisor(strategy_v5=StrategyParamsV5(**params)),
+                                     Envelope(EnvelopeConfig.v070()), Budget(1.0), prompt_version=5)
+        control = True
+    else:  # strategy6: the same strategy, prompt version 6, with the 0.8.0 trim hold
+        controller = AgentController(ScriptedSupervisor(strategy_v5=StrategyParamsV5(**params)),
+                                     Envelope(EnvelopeConfig()), Budget(1.0), prompt_version=6)
         control = True
     res = run_session(CityLearnSimulator(control=control, schema=Path(schema)), controller, NullWriter(),
                       log=lambda *_: None)
@@ -166,7 +177,7 @@ def line(name: str, k: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--version", type=int, default=5, choices=(4, 5))
+    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6))
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--jobs", type=int, default=None, help="parallel simulations (default: one per CPU)")
     ap.add_argument("--out", type=Path, default=None, help="optionally write every result as JSON")
@@ -174,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.version == 5:
         return main_v5(args)
+    if args.version == 6:
+        return main_v6(args)
     with tempfile.TemporaryDirectory() as tmp:
         months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
         candidates = [asdict(StrategyParams())] if args.quick else [
@@ -233,6 +246,34 @@ def main_v5(args) -> int:
     print(f"best settings differ from the shipped defaults in: {changed or 'nothing'}")
     if args.out:
         args.out.write_text(json.dumps({"baseline": base, "rule": rule, "v4": v4, "rows": rows, "best": best},
+                                       indent=2, sort_keys=True), encoding="utf-8")
+    return 0
+
+
+def main_v6(args) -> int:
+    """The trim hold on the tuning months: the shipped version 5 strategy with and without it."""
+    params = asdict(StrategyParamsV5())
+    with tempfile.TemporaryDirectory() as tmp:
+        months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
+        jobs = [("baseline", None, m) for m in months] + [("strategy5", params, m) for m in months]
+        jobs += [("strategy6", params, m) for m in months]
+        with cf.ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp.get_context("spawn")) as pool:
+            results = list(pool.map(kpis, jobs))
+    n = len(months)
+    base, v5, v6 = mean(results[:n]), mean(results[n:2 * n]), mean(results[2 * n:3 * n])
+    print(f"tuning set: {TUNING_DATASET.name}, {n} months, mean over months")
+    print(line("baseline", base))
+    print(line("0.7 rules", v5))
+    print(line("0.8 hold", v6))
+    worse = [k for k in KEYS if v6[k] > v5[k] + TOLERANCE]
+    print("with the trim hold, worse than without on: " + (", ".join(worse) if worse else "nothing"))
+    for i in range(n):
+        a, b = results[n + i], results[2 * n + i]
+        print(f"  month {i + 1}: ramping {a['ramping_average']:.4f} -> {b['ramping_average']:.4f}, "
+              f"cost {a['cost_total']:.4f} -> {b['cost_total']:.4f}, "
+              f"discomfort {a['discomfort_proportion']:.4f} -> {b['discomfort_proportion']:.4f}")
+    if args.out:
+        args.out.write_text(json.dumps({"baseline": base, "v5_070": v5, "v5_080": v6, "months": results},
                                        indent=2, sort_keys=True), encoding="utf-8")
     return 0
 
