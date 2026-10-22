@@ -244,10 +244,12 @@ class Envelope:
     def __init__(self, config: EnvelopeConfig | None = None) -> None:
         self.config = config or EnvelopeConfig()
         self.memory: dict[str, float] = {}  # "Building_1.battery" -> last applied action
+        self.trims: dict[str, float] = {}  # building -> last hour's cooling minus its baseline (0.7.0, read only)
 
     def fallback(self, ctx: StepContext, why: str) -> Decision:
         """Use the baseline action everywhere and remember it as the last action."""
         self.memory = {f"{b}.{d}": st.baseline[d] for b, st in ctx.buildings.items() for d in DEVICE_KEYS}
+        self.trims = {}
         return baseline_decision(ctx.buildings, fallback=why)
 
     def apply(self, proposal: dict | None, ctx: StepContext, invalid_reason: str | None = None) -> Decision:
@@ -266,6 +268,8 @@ class Envelope:
         if self.config.peak_limit:
             self._limit_peak(actions, ctx, clamps, memory)
         self.memory = memory
+        self.trims = {b: 0.0 if actions[b]["cooling"] is None else actions[b]["cooling"] - st.baseline["cooling"]
+                      for b, st in ctx.buildings.items()}
         return Decision(actions=actions, clamps=clamps, reason=proposal["reason"])
 
     def peak_target(self, ctx: StepContext) -> float | None:

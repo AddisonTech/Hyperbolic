@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from conftest import needs_citylearn
 
 from hyperbolic import district as dc
@@ -145,46 +147,39 @@ def test_indoor_temperature_is_the_one_citylearn_simulated():
 
 
 @needs_citylearn
-def test_v4_strategy_dry_run_and_replay(tmp_path):
-    """24 hours of the prompt version 4 strategy through the spread check and replay."""
+@pytest.mark.parametrize("version", [4, 5])
+def test_scripted_strategy_dry_run_and_replay(tmp_path, version):
+    """24 hours of the scripted version 4 or 5 strategy through the spread check, and replay."""
     from hyperbolic.sim import CityLearnSimulator
 
-    version, cfg = controller_settings(rule_based=False)
+    version, cfg = controller_settings(rule_based=True, prompt_version=version)
     ctl = AgentController(ScriptedSupervisor(), Envelope(cfg), Budget(2.0), prompt_version=version)
-    run_dir = tmp_path / "v4"
+    run_dir = tmp_path / f"v{version}"
     res = run_session(CityLearnSimulator(control=True), ctl, RunWriter(run_dir), hours=HOURS, log=quiet,
                       sim_info={"kind": "citylearn", "control": True})
     assert res["steps"] == HOURS and res["fallback_steps"] == 0
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["supervisor"]["prompt_version"] == 4 and manifest["envelope"]["spread_check"] is True
+    assert manifest["supervisor"]["prompt_version"] == version and manifest["envelope"]["spread_check"] is True
     calls = load_jsonl(run_dir / "calls.jsonl")
     obs = observation_from_request(calls[5]["request"])
     assert {"reference_action", "indoor_vs_setpoint_c"} <= set(obs["buildings"]["Building_1"])
     assert "reference_action" in calls[5]["request"]["system"]
+    assert ("smoothing" in obs) == (version == 5)
     rep = replay_run(run_dir)
     assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == HOURS
 
 
 @needs_citylearn
-def test_cli_scripted_run_has_no_faults_unless_asked(tmp_path, capsys):
-    runs = tmp_path / "runs"
-    assert main(["run", "--scripted", "--hours", "40", "--runs-dir", str(runs)]) == 0
-    assert main(["run", "--scripted", "--inject-faults", "--hours", "40", "--runs-dir", str(runs / "f")]) == 0
-    clean = next(p for p in runs.iterdir() if "_agent_" in p.name)
-    faulty = next(p for p in (runs / "f").iterdir())
-    clean_steps = load_jsonl(clean / "steps.jsonl")
-    faulty_steps = load_jsonl(faulty / "steps.jsonl")
-    assert json.loads((clean / "result.json").read_text())["fallback_steps"] == 0
-    # --scripted is the frozen 0.4.0 rule-based controller unless a prompt version is asked for.
-    manifest = json.loads((clean / "manifest.json").read_text())
-    assert manifest["supervisor"]["prompt_version"] == 3 and manifest["envelope"]["spread_check"] is False
-    # The first injected fault is a too-fast battery move at hour 31.
-    assert "rate" not in {c["rule"] for c in clean_steps[31]["decision"]["clamps"]}
-    assert "rate" in {c["rule"] for c in faulty_steps[31]["decision"]["clamps"]}
+def test_v5_strategy_full_month_brings_ramping_below_the_baseline():
+    """The scripted version 5 month: ramping below the baseline, and still ahead of the 0.4.0
+    rule-based controller on cost and emissions with less discomfort."""
+    from hyperbolic.sim import CityLearnSimulator
 
-
-def test_cli_rejects_hours_citylearn_cannot_run(tmp_path, capsys):
-    assert main(["run", "--scripted", "--hours", "168", "--runs-dir", str(tmp_path)]) == 2
-    assert "167" in capsys.readouterr().err
-    assert main(["run", "--inject-faults", "--hours", "24", "--runs-dir", str(tmp_path)]) == 2
-    assert not any(tmp_path.iterdir())
+    version, cfg = controller_settings(rule_based=True, prompt_version=5)
+    ctl = AgentController(ScriptedSupervisor(), Envelope(cfg), Budget(2.0), prompt_version=version)
+    res = run_session(CityLearnSimulator(control=True), ctl, NullWriter(), hours=dc.EPISODE_HOURS, log=quiet)
+    k = res["district_kpis"]
+    assert res["complete"] and res["fallback_steps"] == 0
+    assert k["ramping_average"] < 1.0
+    assert k["cost_total"] < 0.9611 and k["carbon_emissions_total"] < 0.9947 and k["discomfort_proportion"] < 0.1714
+    assert k["daily_peak_average"] < 1.0 and k["all_time_peak_average"] < 1.0

@@ -110,6 +110,9 @@ class PeakInfo:
     forecast_peak_kwh: float | None   # lowest of the last few days' peaks of load before storage
     today_grid_peak_kwh: float | None  # highest measured district draw today, completed hours only
     month_grid_peak_kwh: float | None  # highest measured district draw so far this run
+    # Added in 0.7.0 for smoothing.
+    last_hour_grid_kwh: float | None = None    # measured district draw in the hour just finished
+    next_hour_load_kwh: float | None = None    # district load before storage at the next hour, yesterday
 
 
 class PeakTracker:
@@ -141,4 +144,6 @@ class PeakTracker:
             forecast_peak_kwh=min(past) if past else None,
             today_grid_peak_kwh=max(today_grid) if today_grid else None,
             month_grid_peak_kwh=max(self.grid.values()) if self.grid else None,
+            last_hour_grid_kwh=self.grid.get(t - 1),
+            next_hour_load_kwh=self.load.get(t + 1 - 24),
         )

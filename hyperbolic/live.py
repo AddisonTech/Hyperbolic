@@ -74,8 +74,8 @@ DURATIONS = [
     {"id": "week", "label": "1 week (167 hours)", "hours": 167},
     {"id": "month", "label": "Full month (719 hours)", "hours": dc.EPISODE_HOURS},
 ]
-# Typical prompt version 4 request and reply, for a cost estimate before any run is recorded.
-TYPICAL_TOKENS = (2800, 250)
+# Typical prompt version 5 request and reply, for a cost estimate before any run is recorded.
+TYPICAL_TOKENS = (3000, 250)
 
 
 def key_status(env: dict[str, str] | None = None) -> dict:
