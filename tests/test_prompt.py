@@ -31,18 +31,19 @@ def fake_states(n):
     return out
 
 
-def test_default_prompt_is_version_7_and_the_rule_based_controller_stays_on_3():
-    assert PROMPT_VERSION == 7
-    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 7
+def test_default_prompt_is_version_8_and_the_rule_based_controller_stays_on_3():
+    assert PROMPT_VERSION == 8
+    assert AgentController(ScriptedSupervisor(), Envelope(), Budget(1.0)).describe()["prompt_version"] == 8
     # The rule-based controller is the frozen 0.4.0 reference: prompt version 3, no spread check.
     assert controller_settings(True) == (3, EnvelopeConfig.v040())
-    assert controller_settings(False) == (7, EnvelopeConfig())
-    # Versions before 6 keep the 0.7.0 rules; versions 6 and 7 run the 0.8.0 rules with the trim hold.
+    assert controller_settings(False) == (8, EnvelopeConfig())
+    # Versions before 6 keep the 0.7.0 rules; versions 6 to 8 run the 0.8.0 rules with the trim hold.
     assert controller_settings(True, 4) == (4, EnvelopeConfig.v070())
     assert controller_settings(True, 5) == (5, EnvelopeConfig.v070())
     assert controller_settings(False, 5) == (5, EnvelopeConfig.v070())
     assert controller_settings(True, 6) == (6, EnvelopeConfig())
     assert controller_settings(True, 7) == (7, EnvelopeConfig()) == controller_settings(False, 7)
+    assert controller_settings(True, 8) == (8, EnvelopeConfig()) == controller_settings(False, 8)
     assert EnvelopeConfig.v040().spread_check is False and EnvelopeConfig().spread_check is True
     assert EnvelopeConfig().trim_hold is True
     assert EnvelopeConfig.v070().trim_hold is False and EnvelopeConfig.v040().trim_hold is False
@@ -124,12 +125,12 @@ def test_v2_prompt_states_the_strategy_and_the_rules():
 def test_request_carries_the_observation_for_each_version():
     st = fake_states(1)[0]
     ctx = context_from_state(st)
-    for version in (1, 2, 3, 4, 5, 6, 7):
+    for version in (1, 2, 3, 4, 5, 6, 7, 8):
         obs = observe(version, st, ctx, None, Lookahead())
         req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=version)
         assert observation_from_request(req) == json.loads(json.dumps(obs))
     with pytest.raises(ValueError):
-        observe(8, st, ctx, None, Lookahead())
+        observe(9, st, ctx, None, Lookahead())
 
 
 @pytest.mark.parametrize("version", [3, 4, 5, 6, 7])

@@ -244,9 +244,9 @@ class AgentController:
         return decision, call_info
 
 
-def new_run_dir(runs_dir: Path, mode: str, sim_kind: str) -> Path:
+def new_run_dir(runs_dir: Path, mode: str, sim_kind: str, dataset: str = dc.DATASET) -> Path:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return runs_dir / f"{dc.DATASET}_{mode}_{sim_kind}_{stamp}"
+    return runs_dir / f"{dataset}_{mode}_{sim_kind}_{stamp}"
 
 
 def district_kpis(kpis: list[dict]) -> dict[str, float | None]:
@@ -271,28 +271,32 @@ def run_session(
     on_step: Callable[[dict], None] | None = None,
     control: RunControl | None = None,
     max_steps: int | None = None,
+    dataset: str = dc.DATASET,
 ) -> dict:
     """Run one episode of `hours` hourly decisions (the full month if None).
 
     on_step receives each hour's record right after it is written. control may pause or
     stop the run between hours; a stopped run is saved as partial. max_steps ends the run
     early without changing the episode length the simulator was started with, so a short
-    run sees the same outages as the longer one it is compared with.
+    run sees the same outages as the longer one it is compared with. dataset names the month
+    in the manifest (0.10.0: a tuning month of the month set; hyperbolic.months).
     """
     state = sim.start(hours)
     stopped = False
-    episode_hours = hours or dc.EPISODE_HOURS
+    # The month's own length: 719 hours for the phase 2 month, 743 for a 31 day tuning month.
+    month_hours = int(getattr(sim, "episode_end_t", dc.EPISODE_HOURS))
+    episode_hours = hours or month_hours
     try:
         envelope_cfg = controller.envelope.config.as_dict() if controller.envelope else None
         writer.start({
             "schema": 2,
             "tool_version": __version__,
             "mode": controller.mode,
-            "dataset": dc.DATASET,
+            "dataset": dataset,
             "buildings": list(state["buildings"]),
             "step_s": dc.STEP_SECONDS,
             "hours_limit": hours,
-            "episode_hours": dc.EPISODE_HOURS,
+            "episode_hours": month_hours,
             "simulator": sim_info or {"kind": sim.kind},
             "supervisor": controller.describe(),
             "envelope": envelope_cfg,

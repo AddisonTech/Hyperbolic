@@ -5,6 +5,7 @@
     python scripts/tune_strategy.py --version 4    # the 0.6.0 version 4 search, as it was run
     python scripts/tune_strategy.py --version 6    # 0.8.0 check: the trim hold, nothing tuned
     python scripts/tune_strategy.py --version 7    # 0.9.0 battery plan without step changes
+    python scripts/tune_strategy.py --version 8    # 0.10.0 extra cooling in a warm room
 
 Tuning set: citylearn_challenge_2023_phase_2_online_evaluation_1 from CityLearn v3.0.2, copied
 unchanged into scripts/tuning_data. It has the same three buildings, batteries and LSTM models as
@@ -42,17 +43,28 @@ differs. A candidate qualifies when, averaged over the three months, ramping is 
 reference's and cost, emissions, discomfort and both peaks are no worse than it. The qualifying
 candidate with the lowest ramping plus daily load factor wins, cost plus emissions breaking ties;
 with none, the reference stays. The version 6 strategy is printed beside them.
+
+Version 8 (0.10.0) searches the extra cooling the strategy gives an occupied room that runs warm
+(StrategyParamsV8: how far above its setpoint, how much above the baseline action, and over how
+many degrees it ramps in) and a night without trims (StrategyParamsV8.night_from_hour and
+night_until_hour: none starts and a held one is ended, so the room cools back to the reference's
+cushion overnight), alone and together, with the 0.8.0 rules, unchanged. The reference is the shipped version 7
+strategy. Comfort comes first, as in the prompt's goals: a candidate qualifies when its too-warm
+share is at or below the baseline's on every tuning month, its mean too-cool share is no more than
+0.001 above the reference's, and its mean ramping and both peaks stay at or below the baseline's.
+The qualifying candidate with the lowest cost plus emissions wins, the lower too-warm share
+breaking ties; with none, no extra cooling is shipped. (A first rule that also held cost,
+emissions, both peaks and ramping within 0.001 of the reference qualified none of the 36: the
+cheapest full fix costs about 0.002 of cost, and the night rule costs more and clears no warm hour.)
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
-import csv
 import itertools
 import json
 import multiprocessing as mp
-import shutil
 import sys
 import tempfile
 from dataclasses import asdict
@@ -61,14 +73,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from hyperbolic import months as mo  # noqa: E402
 from hyperbolic.envelope import Envelope, EnvelopeConfig  # noqa: E402
-from hyperbolic.model import Budget, ScriptedSupervisor, StrategyParams, StrategyParamsV5, StrategyParamsV7  # noqa: E402
+from hyperbolic.model import (  # noqa: E402
+    Budget,
+    ScriptedSupervisor,
+    StrategyParams,
+    StrategyParamsV5,
+    StrategyParamsV7,
+    StrategyParamsV8,
+)
 from hyperbolic.runner import AgentController, BaselineController, NullWriter, run_session  # noqa: E402
 
-TUNING_DATASET = ROOT / "scripts" / "tuning_data" / "citylearn_challenge_2023_phase_2_online_evaluation_1"
-SERIES = ("Building_1.csv", "Building_2.csv", "Building_3.csv", "carbon_intensity.csv", "pricing.csv", "weather.csv")
+TUNING_DATASET = mo.TUNING_DATASET
 KEYS = ("cost_total", "carbon_emissions_total", "discomfort_proportion", "daily_peak_average", "all_time_peak_average",
         "ramping_average", "daily_one_minus_load_factor_average")
+COMFORT = ("discomfort_cold_proportion", "discomfort_hot_proportion")
 # A ratio counts as at or below the baseline's to four decimals: the baseline action under active
 # control rounds the heat pump fraction, which by itself moves a ratio by about 1e-5.
 TOLERANCE = 5e-5
@@ -98,37 +118,33 @@ GRID_V7 = {
     "fill_valley": (False, True),
     "charge_rate": (0.1, 0.15),
 }
+# Version 8: everything else at the shipped version 7 numbers. Two families and their mix: extra
+# cooling in a warm room (no night rule), no trim at night (no extra cooling), and the night rule
+# with the two mildest boosts that cleared every warm hour.
+GRID_V8_WARM = {
+    "warm_margin_c": (0.5, 1.0, 1.5),
+    "warm_boost": (0.05, 0.1, 0.15),
+    "warm_ramp_c": (0.0, 1.0),
+}
+GRID_V8_NIGHT = {
+    "night_from_hour": (18, 20, 22),
+    "night_until_hour": (5, 7),
+}
+GRID_V8_MIX = ({"warm_margin_c": 1.5, "warm_boost": 0.1, "warm_ramp_c": 0.0},
+               {"warm_margin_c": 1.0, "warm_boost": 0.1, "warm_ramp_c": 1.0})
+GRID_V8 = (*GRID_V8_WARM, *GRID_V8_NIGHT)
+V8_SLACK = 0.001
 
 
 def month_datasets(out: Path) -> list[Path]:
-    """One dataset folder per calendar month of the tuning set, each a full episode."""
-    with (TUNING_DATASET / "Building_1.csv").open(encoding="utf-8") as f:
-        months = [row["month"] for row in csv.DictReader(f)]
-    spans, start = [], 0
-    for i in range(1, len(months) + 1):
-        if i == len(months) or months[i] != months[start]:
-            spans.append((months[start], start, i))
-            start = i
-    schema = json.loads((TUNING_DATASET / "schema.json").read_text(encoding="utf-8"))
-    dirs = []
-    for month, a, b in spans:
-        d = out / f"month_{int(month):02d}"
-        d.mkdir(parents=True, exist_ok=True)
-        for name in SERIES:
-            lines = (TUNING_DATASET / name).read_text(encoding="utf-8").splitlines(keepends=True)
-            (d / name).write_text("".join([lines[0], *lines[1 + a:1 + b]]), encoding="utf-8")
-        for pth in TUNING_DATASET.glob("*.pth"):
-            shutil.copy(pth, d / pth.name)
-        (d / "schema.json").write_text(json.dumps({**schema, "simulation_start_time_step": 0,
-                                                   "simulation_end_time_step": b - a - 1}), encoding="utf-8")
-        dirs.append(d)
-    return dirs
+    """One dataset folder per calendar month of the tuning set, each a full episode (hyperbolic.months)."""
+    return [mo.month_schema(m, out).parent for m in mo.months() if m.rows is not None]
 
 
 def kpis(job: tuple[str, dict | None, str]) -> dict:
     """job: (kind, params or None, schema path). kind is baseline, rule, strategy (version 4),
-    strategy5 (version 5), strategy6 (version 5's strategy with the 0.8.0 trim hold) or strategy7
-    (the version 7 strategy, same rules)."""
+    strategy5 (version 5), strategy6 (version 5's strategy with the 0.8.0 trim hold), strategy7
+    (the version 7 strategy, same rules) or strategy8 (the version 8 strategy, same rules)."""
     import torch
 
     torch.set_num_threads(1)  # one simulation per process
@@ -152,14 +168,19 @@ def kpis(job: tuple[str, dict | None, str]) -> dict:
         controller = AgentController(ScriptedSupervisor(strategy_v5=StrategyParamsV5(**params)),
                                      Envelope(EnvelopeConfig()), Budget(1.0), prompt_version=6)
         control = True
-    else:  # strategy7: prompt version 7, the same 0.8.0 rules
+    elif kind == "strategy7":  # prompt version 7, the same 0.8.0 rules
         controller = AgentController(ScriptedSupervisor(strategy_v7=StrategyParamsV7(**params)),
                                      Envelope(EnvelopeConfig()), Budget(1.0), prompt_version=7)
+        control = True
+    else:  # strategy8: prompt version 8, the same 0.8.0 rules
+        controller = AgentController(ScriptedSupervisor(strategy_v8=StrategyParamsV8(**params)),
+                                     Envelope(EnvelopeConfig()), Budget(1.0), prompt_version=8)
         control = True
     res = run_session(CityLearnSimulator(control=control, schema=Path(schema)), controller, NullWriter(),
                       log=lambda *_: None)
     k = res["district_kpis"]
-    return {key: k.get(key) for key in KEYS} | {"clamped": res["clamped_steps"], "fallback": res["fallback_steps"]}
+    return ({key: k.get(key) for key in (*KEYS, *COMFORT)}
+            | {"clamped": res["clamped_steps"], "fallback": res["fallback_steps"]})
 
 
 def mean(rows: list[dict]) -> dict:
@@ -215,7 +236,7 @@ def line(name: str, k: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6, 7))
+    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6, 7, 8))
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--jobs", type=int, default=None, help="parallel simulations (default: one per CPU)")
     ap.add_argument("--out", type=Path, default=None, help="optionally write every result as JSON")
@@ -227,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
         return main_v6(args)
     if args.version == 7:
         return main_v7(args)
+    if args.version == 8:
+        return main_v8(args)
     with tempfile.TemporaryDirectory() as tmp:
         months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
         candidates = [asdict(StrategyParams())] if args.quick else [
@@ -350,6 +373,74 @@ def main_v7(args) -> int:
     print(f"best settings differ from the shipped defaults in: {changed or 'nothing'}")
     if args.out:
         args.out.write_text(json.dumps({"baseline": base, "rule": rule, "v6": v6, "rows": rows, "best": best},
+                                       indent=2, sort_keys=True), encoding="utf-8")
+    return 0
+
+
+def grid_v8() -> list[dict]:
+    off = asdict(StrategyParamsV8())  # no extra cooling, no night rule: the version 7 strategy
+    warm = [dict(zip(GRID_V8_WARM, c)) for c in itertools.product(*GRID_V8_WARM.values())]
+    night = [dict(zip(GRID_V8_NIGHT, c)) for c in itertools.product(*GRID_V8_NIGHT.values())]
+    return ([{**off, **w} for w in warm] + [{**off, **n} for n in night]
+            + [{**off, **n, **w} for n in night for w in GRID_V8_MIX])
+
+
+def qualifies_v8(k: dict, months: list[dict], base_months: list[dict], ref: dict) -> bool:
+    """Too warm at or below the baseline on every month, too cool within V8_SLACK of ref, and ramping
+    and both peaks at or below the baseline, on the mean."""
+    return (all(m["discomfort_hot_proportion"] <= b["discomfort_hot_proportion"] + 1e-9
+                for m, b in zip(months, base_months))
+            and k["discomfort_cold_proportion"] <= ref["discomfort_cold_proportion"] + V8_SLACK
+            and all(k[x] <= 1.0 + TOLERANCE for x in ("ramping_average", "daily_peak_average", "all_time_peak_average")))
+
+
+def mean_all(rows: list[dict]) -> dict:
+    return {k: sum(r[k] for r in rows) / len(rows) for k in (*KEYS, *COMFORT, "clamped")}
+
+
+def line_v8(name: str, k: dict) -> str:
+    return line(name, k) + f" too cool {k['discomfort_cold_proportion']:.4f} too warm {k['discomfort_hot_proportion']:.4f}"
+
+
+def main_v8(args) -> int:
+    """Extra cooling in a warm room on the tuning months, against the shipped version 7 strategy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
+        candidates = [asdict(StrategyParamsV8())] if args.quick else grid_v8()
+        jobs = [("baseline", None, m) for m in months] + [("strategy7", asdict(StrategyParamsV7()), m) for m in months]
+        jobs += [("strategy8", c, m) for c in candidates for m in months]
+        with cf.ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp.get_context("spawn")) as pool:
+            results = list(pool.map(kpis, jobs))
+    n = len(months)
+    base_months, ref_months = results[:n], results[n:2 * n]
+    base, ref = mean_all(base_months), mean_all(ref_months)
+    print(f"tuning set: {TUNING_DATASET.name}, {n} months, mean over months")
+    print(line_v8("baseline", base))
+    print(line_v8("v7 shipped", ref))
+    print("  too warm by month, baseline: " + ", ".join(f"{m['discomfort_hot_proportion']:.4f}" for m in base_months)
+          + "; v7: " + ", ".join(f"{m['discomfort_hot_proportion']:.4f}" for m in ref_months))
+    rows = []
+    for i, c in enumerate(candidates):
+        got = results[2 * n + i * n:2 * n + (i + 1) * n]
+        k = mean_all(got)
+        ok = qualifies_v8(k, got, base_months, ref)
+        rows.append({"params": c, "kpis": k, "months": got, "qualifies": ok,
+                     "score": (score(k), k["discomfort_hot_proportion"])})
+        print(line_v8(" ".join(f"{g}={c[g]}" for g in GRID_V8), k) + (" qualifies" if ok else "")
+              + "  too warm by month " + ", ".join(f"{m['discomfort_hot_proportion']:.4f}" for m in got))
+    pool_rows = [r for r in rows if r["qualifies"]]
+    print(f"{len(pool_rows)} of {len(rows)} candidates qualify")
+    best = None
+    if pool_rows:
+        best = min(pool_rows, key=lambda r: (r["score"], json.dumps(r["params"], sort_keys=True)))
+        print(line_v8("best", best["kpis"]))
+        shipped = asdict(StrategyParamsV8())
+        changed = {k: v for k, v in best["params"].items() if v != shipped[k]}
+        print(f"best settings differ from the shipped defaults in: {changed or 'nothing'}")
+    else:
+        print("none qualifies: no extra cooling")
+    if args.out:
+        args.out.write_text(json.dumps({"baseline": base, "v7": ref, "rows": rows, "best": best},
                                        indent=2, sort_keys=True), encoding="utf-8")
     return 0
 
