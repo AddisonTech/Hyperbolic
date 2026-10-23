@@ -4,6 +4,7 @@
     python scripts/tune_strategy.py --quick        # the shipped version 5 defaults only
     python scripts/tune_strategy.py --version 4    # the 0.6.0 version 4 search, as it was run
     python scripts/tune_strategy.py --version 6    # 0.8.0 check: the trim hold, nothing tuned
+    python scripts/tune_strategy.py --version 7    # 0.9.0 battery plan without step changes
 
 Tuning set: citylearn_challenge_2023_phase_2_online_evaluation_1 from CityLearn v3.0.2, copied
 unchanged into scripts/tuning_data. It has the same three buildings, batteries and LSTM models as
@@ -30,6 +31,17 @@ strategy (hold within 0.5 C, ease by 0.02 per hour), and the check runs the ship
 strategy through the 0.7.0 rules and through the 0.8.0 rules (prompt version 6, trim hold on),
 so its effect is measured on the tuning months before anything is reported on the test month.
 The version 4 and 5 searches run with the 0.7.0 rules they were made with.
+
+Version 7 (0.9.0) searches the battery plan's smoothing (StrategyParamsV7: the soft cap on how fast
+a battery action may rise, on charging and discharging or on a discharge winding down only, valley
+filling, and the charge rate) with the 0.8.0 rules, unchanged.
+The strategy keeps every action inside the ranges the version 7 observation shows. A cap of 1 is
+no cap, so the grid includes version 6's own battery plan (the shipped StrategyParamsV7), and that
+candidate is the reference: the cooling is the same in every candidate, so only the battery plan
+differs. A candidate qualifies when, averaged over the three months, ramping is below the
+reference's and cost, emissions, discomfort and both peaks are no worse than it. The qualifying
+candidate with the lowest ramping plus daily load factor wins, cost plus emissions breaking ties;
+with none, the reference stays. The version 6 strategy is printed beside them.
 """
 
 from __future__ import annotations
@@ -50,7 +62,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hyperbolic.envelope import Envelope, EnvelopeConfig  # noqa: E402
-from hyperbolic.model import Budget, ScriptedSupervisor, StrategyParams, StrategyParamsV5  # noqa: E402
+from hyperbolic.model import Budget, ScriptedSupervisor, StrategyParams, StrategyParamsV5, StrategyParamsV7  # noqa: E402
 from hyperbolic.runner import AgentController, BaselineController, NullWriter, run_session  # noqa: E402
 
 TUNING_DATASET = ROOT / "scripts" / "tuning_data" / "citylearn_challenge_2023_phase_2_online_evaluation_1"
@@ -78,6 +90,13 @@ GRID_V5 = {
     "trim_hold_c": (0.0, 0.25, 0.5),
     "trim_step": (0.02, 0.05, 1.0),
     "charge_step": (0.05, 0.15),
+}
+# Version 7: the battery plan's smoothing, everything else at the shipped version 5 numbers.
+GRID_V7 = {
+    "rise_step": (1.0, 0.25, 0.15, 0.1, 0.05),
+    "rise_charge": (True, False),
+    "fill_valley": (False, True),
+    "charge_rate": (0.1, 0.15),
 }
 
 
@@ -108,7 +127,8 @@ def month_datasets(out: Path) -> list[Path]:
 
 def kpis(job: tuple[str, dict | None, str]) -> dict:
     """job: (kind, params or None, schema path). kind is baseline, rule, strategy (version 4),
-    strategy5 (version 5) or strategy6 (version 5's strategy with the 0.8.0 trim hold)."""
+    strategy5 (version 5), strategy6 (version 5's strategy with the 0.8.0 trim hold) or strategy7
+    (the version 7 strategy, same rules)."""
     import torch
 
     torch.set_num_threads(1)  # one simulation per process
@@ -128,9 +148,13 @@ def kpis(job: tuple[str, dict | None, str]) -> dict:
         controller = AgentController(ScriptedSupervisor(strategy_v5=StrategyParamsV5(**params)),
                                      Envelope(EnvelopeConfig.v070()), Budget(1.0), prompt_version=5)
         control = True
-    else:  # strategy6: the same strategy, prompt version 6, with the 0.8.0 trim hold
+    elif kind == "strategy6":  # the same strategy, prompt version 6, with the 0.8.0 trim hold
         controller = AgentController(ScriptedSupervisor(strategy_v5=StrategyParamsV5(**params)),
                                      Envelope(EnvelopeConfig()), Budget(1.0), prompt_version=6)
+        control = True
+    else:  # strategy7: prompt version 7, the same 0.8.0 rules
+        controller = AgentController(ScriptedSupervisor(strategy_v7=StrategyParamsV7(**params)),
+                                     Envelope(EnvelopeConfig()), Budget(1.0), prompt_version=7)
         control = True
     res = run_session(CityLearnSimulator(control=control, schema=Path(schema)), controller, NullWriter(),
                       log=lambda *_: None)
@@ -139,7 +163,7 @@ def kpis(job: tuple[str, dict | None, str]) -> dict:
 
 
 def mean(rows: list[dict]) -> dict:
-    return {k: sum(r[k] for r in rows) / len(rows) for k in KEYS}
+    return {k: sum(r[k] for r in rows) / len(rows) for k in (*KEYS, "clamped") if k in rows[0]}
 
 
 def qualifies(k: dict, base: dict, rule: dict) -> bool:
@@ -168,16 +192,30 @@ def grid_v5() -> list[dict]:
     return [{**asdict(StrategyParamsV5()), **dict(zip(GRID_V5, combo))} for combo in itertools.product(*GRID_V5.values())]
 
 
+def grid_v7() -> list[dict]:
+    """Without a cap, whether it covers charging makes no difference, so that pair runs once."""
+    return [{**asdict(StrategyParamsV7()), **dict(zip(GRID_V7, combo))} for combo in itertools.product(*GRID_V7.values())
+            if combo[0] < 1.0 or combo[1]]
+
+
+def qualifies_v7(k: dict, ref: dict) -> bool:
+    """Ramping below ref's; cost, emissions, discomfort and both peaks no worse than ref."""
+    return (k["ramping_average"] < ref["ramping_average"] - TOLERANCE
+            and all(k[x] <= ref[x] + TOLERANCE for x in ("cost_total", "carbon_emissions_total", "discomfort_proportion",
+                                                          "daily_peak_average", "all_time_peak_average")))
+
+
 def line(name: str, k: dict) -> str:
     return (f"{name:>10} cost {k['cost_total']:.4f} emissions {k['carbon_emissions_total']:.4f} "
             f"discomfort {k['discomfort_proportion']:.4f} daily peak {k['daily_peak_average']:.4f} "
             f"all-time peak {k['all_time_peak_average']:.4f} ramping {k['ramping_average']:.4f} "
-            f"load factor {k['daily_one_minus_load_factor_average']:.4f}")
+            f"load factor {k['daily_one_minus_load_factor_average']:.4f}"
+            + (f" clamped {k['clamped']:.1f}" if "clamped" in k else ""))
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6))
+    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6, 7))
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--jobs", type=int, default=None, help="parallel simulations (default: one per CPU)")
     ap.add_argument("--out", type=Path, default=None, help="optionally write every result as JSON")
@@ -187,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
         return main_v5(args)
     if args.version == 6:
         return main_v6(args)
+    if args.version == 7:
+        return main_v7(args)
     with tempfile.TemporaryDirectory() as tmp:
         months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
         candidates = [asdict(StrategyParams())] if args.quick else [
@@ -274,6 +314,42 @@ def main_v6(args) -> int:
               f"discomfort {a['discomfort_proportion']:.4f} -> {b['discomfort_proportion']:.4f}")
     if args.out:
         args.out.write_text(json.dumps({"baseline": base, "v5_070": v5, "v5_080": v6, "months": results},
+                                       indent=2, sort_keys=True), encoding="utf-8")
+    return 0
+
+
+def main_v7(args) -> int:
+    """The version 7 battery plan on the tuning months, against the shipped version 6 strategy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
+        candidates = [asdict(StrategyParamsV7())] if args.quick else grid_v7()
+        jobs = [("baseline", None, m) for m in months] + [("rule", None, m) for m in months]
+        jobs += [("strategy6", asdict(StrategyParamsV5()), m) for m in months]
+        jobs += [("strategy7", c, m) for c in candidates for m in months]
+        with cf.ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp.get_context("spawn")) as pool:
+            results = list(pool.map(kpis, jobs))
+    n = len(months)
+    base, rule, v6 = mean(results[:n]), mean(results[n:2 * n]), mean(results[2 * n:3 * n])
+    print(f"tuning set: {TUNING_DATASET.name}, {n} months, mean over months")
+    print(line("baseline", base))
+    print(line("rule 0.4.0", rule))
+    print(line("v6 0.8.0", v6))
+    shipped = asdict(StrategyParamsV7())
+    ks = [mean(results[3 * n + i * n:3 * n + (i + 1) * n]) for i in range(len(candidates))]
+    ref = ks[candidates.index(shipped)]
+    print(line("v7 shipped", ref))
+    rows = []
+    for c, k in zip(candidates, ks):
+        rows.append({"params": c, "kpis": k, "qualifies": qualifies_v7(k, ref), "score": score_v5(k)})
+        print(line(" ".join(f"{g}={c[g]}" for g in GRID_V7), k) + (" qualifies" if rows[-1]["qualifies"] else ""))
+    pool_rows = [r for r in rows if r["qualifies"]] or [r for r in rows if r["params"] == shipped]
+    best = min(pool_rows, key=lambda r: (r["score"], json.dumps(r["params"], sort_keys=True)))
+    print(f"{sum(r['qualifies'] for r in rows)} of {len(rows)} candidates qualify")
+    print(line("best", best["kpis"]) + ("" if best["qualifies"] else " (does not qualify)"))
+    changed = {k: v for k, v in best["params"].items() if v != shipped[k]}
+    print(f"best settings differ from the shipped defaults in: {changed or 'nothing'}")
+    if args.out:
+        args.out.write_text(json.dumps({"baseline": base, "rule": rule, "v6": v6, "rows": rows, "best": best},
                                        indent=2, sort_keys=True), encoding="utf-8")
     return 0
 

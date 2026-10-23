@@ -1,4 +1,5 @@
-"""scripts/split_ramping.py and scripts/evaluate_hold.py: the 0.8.0 diagnosis and estimate tools."""
+"""scripts/split_ramping.py, scripts/evaluate_hold.py and scripts/evaluate_fit.py: the 0.8.0 and 0.9.0
+diagnosis and estimate tools, and the version 7 search grid."""
 
 import dataclasses
 import json
@@ -10,11 +11,13 @@ from conftest import needs_citylearn
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
+import evaluate_fit  # noqa: E402
 import evaluate_hold  # noqa: E402
 import split_ramping  # noqa: E402
+import tune_strategy  # noqa: E402
 
 from hyperbolic.envelope import Envelope, EnvelopeConfig  # noqa: E402
-from hyperbolic.model import Budget, ScriptedSupervisor  # noqa: E402
+from hyperbolic.model import Budget, ScriptedSupervisor, StrategyParamsV7  # noqa: E402
 from hyperbolic.runner import AgentController, RunWriter, run_session  # noqa: E402
 
 
@@ -48,3 +51,30 @@ def test_evaluation_control_reproduces_a_recorded_run_and_the_split_adds_up(tmp_
     env, steps = split_ramping.resimulate(run)
     assert split_ramping.split(env, steps)["ramping_kwh"] == pytest.approx(s["ramping_kwh"])
     assert evaluate_hold.trim_episodes(control["steps"])["episodes"] >= 0
+
+
+def _fit_obs(state="hold", rng=(0.2, 0.25), battery_range=(-0.3, 0.2)):
+    b = {"trim": {"state": state}, "cooling_range": None if rng is None else list(rng),
+         "battery_range": list(battery_range), "strategy_battery": -0.1}
+    return {"buildings": {"Building_1": b}}
+
+
+def test_fit_reply_moves_a_reply_inside_the_version_7_ranges():
+    reply = {"reason": "r", "Building_1": {"cooling": None, "dhw": None, "battery": 0.5, "end_trim": None}}
+    out = evaluate_fit.fit_reply(reply, _fit_obs())
+    assert out["Building_1"]["cooling"] == 0.25 and out["Building_1"]["battery"] == 0.2  # held trim: top of range
+    assert reply["Building_1"]["cooling"] is None  # the recorded reply is not changed
+    assert evaluate_fit.fit_reply(reply, _fit_obs(state="off"))["Building_1"]["cooling"] is None
+    reply["Building_1"]["cooling"] = 0.4
+    assert evaluate_fit.fit_reply(reply, _fit_obs(state="off"))["Building_1"]["cooling"] == 0.25
+    assert evaluate_fit.fit_reply(reply, _fit_obs(rng=None))["Building_1"]["cooling"] is None
+    reply["Building_1"]["end_trim"] = "room is warming"
+    assert evaluate_fit.fit_reply(reply, _fit_obs())["Building_1"]["cooling"] is None
+    assert evaluate_fit.fit_reply(reply, _fit_obs(), battery_plan=True)["Building_1"]["battery"] == -0.1
+
+
+def test_v7_grid_holds_the_shipped_battery_plan_once():
+    grid = tune_strategy.grid_v7()
+    shipped = dataclasses.asdict(StrategyParamsV7())
+    assert grid.count(shipped) == 1 and len(grid) == len({json.dumps(c, sort_keys=True) for c in grid})
+    assert StrategyParamsV7().rise_step >= StrategyParamsV7().max_step and not StrategyParamsV7().fill_valley
