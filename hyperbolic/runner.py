@@ -36,14 +36,15 @@ from .signals import PeakInfo, PeakTracker, PriceOutlook
 # The rule-based controller is the 0.4.0 reference, kept frozen so its result reproduces: prompt
 # version 3 and the 0.4.0 envelope. Prompt versions 4 and 5 show its plan to the model each hour.
 RULE_PROMPT_VERSION = 3
-# Prompt version 6 is the first that knows the envelope holds cooling trims (0.8.0).
+# Prompt version 6 is the first that knows the envelope holds cooling trims (0.8.0). Version 7
+# (0.9.0) runs the same rules.
 HOLD_PROMPT_VERSION = 6
 
 
 def controller_settings(rule_based: bool, prompt_version: int | None = None) -> tuple[int, EnvelopeConfig]:
     """Prompt version and envelope rules for a new run. Without a prompt version, models get the
     current one and the rule-based controller the 0.4.0 one, each with its own envelope. Prompt
-    versions before 6 run with the 0.7.0 rules, as they did then; version 6 adds the trim hold."""
+    versions before 6 run with the 0.7.0 rules, as they did then; versions 6 and 7 add the trim hold."""
     if prompt_version is None:
         prompt_version = RULE_PROMPT_VERSION if rule_based else PROMPT_VERSION
     if rule_based and prompt_version <= RULE_PROMPT_VERSION:
