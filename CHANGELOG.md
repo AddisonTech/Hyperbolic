@@ -14,6 +14,89 @@ Goal: close the gap between the 0.10.0 live agent and its strategy on the all-ti
 
 Among passing candidates the one with the lowest mean all-time peak plus mean ramping ships, ties going to the lower mean cost. If no candidate passes, nothing new ships: v8 stays the default strategy and this entry says so. The holdout plays no part.
 
+**Where the 0.10.0 live peaks came from** (`scripts/analyze_peaks.py` on the four live months; every replay runs the month's own replies through the unchanged envelope on the month it was recorded on, and every control replay reproduces the published KPIs exactly). The all-time peak is one hour, the district's highest net draw of the month:
+
+| Month | Haiku's all-time peak | Scripted v8's | What Haiku sent there |
+|---|---|---|---|
+| phase 2 | step 669 (day 28, 10 pm), 18.96 kWh (Building_1 8.00, Building_2 1.21, Building_3 9.75) | the same hour, 18.96 | the strategy's actions in that hour and the three before |
+| June | step 669 (day 28, 10 pm), 15.10 | the same hour, 15.08 | the strategy's actions |
+| July | step 739 (day 31, 8 pm), 12.98 (Building_3 10.83) | the same hour, 12.49 | battery 0 in all three buildings where the strategy shaved (-0.033, -0.033, -0.164) |
+| August | step 450 (day 19, 7 pm), 13.80 (Building_1 9.29) | the same hour, 13.23 | an all-null reply where the strategy shaved (-0.033, -0.033, -0.219) and held two trims |
+
+Each departure class put back to the strategy on its own (all-time peak, daily peak, ramping):
+
+| Replay | phase 2 | June | July | August |
+|---|---|---|---|---|
+| Haiku live (control) | 0.9590, 0.9074, 0.9969 | 0.8549, 0.8919, 0.9802 | 0.8822, 0.8943, 0.9744 | 0.8940, 0.8896, 1.0157 |
+| Scripted v8 | 0.9588, 0.9095, 0.9983 | 0.8541, 0.8830, 0.9732 | 0.8491, 0.8854, 0.9677 | 0.8570, 0.8861, 1.0100 |
+| Skipped shaves put back | 0.9590, 0.9078, 0.9907 | 0.8549, 0.8871, 0.9771 | 0.8637, 0.8882, 0.9701 | 0.8570, 0.8881, 1.0138 |
+| Missed trim starts put back | 0.9590, 0.9067, 1.0033 | 0.8549, 0.8858, 0.9812 | 0.8822, 0.8930, 0.9811 | 0.8940, 0.8851, 1.0229 |
+| Skipped charges put back | 0.9590, 0.9074, 0.9952 | 0.8549, 0.8887, 0.9651 | 0.8822, 0.8945, 0.9693 | 0.8940, 0.8899, 1.0066 |
+| Every departure put back | 0.9591, 0.9080, 0.9988 | 0.8549, 0.8842, 0.9632 | 0.8621, 0.8857, 0.9700 | 0.8569, 0.8849, 1.0156 |
+
+Ranked by KPI points explained (live minus replay), summed over the four months:
+
+| Class (building-hours over four months) | All-time peak | Daily peak | Ramping |
+|---|---|---|---|
+| `shave_skipped`: skipped or cut a peak-shaving discharge (35) | +0.0555 | +0.0120 | +0.0155 |
+| `trim_shallower` (82) | +0.0006 | +0.0003 | -0.0010 |
+| `trim_not_started`: no trim in an overcooled room where the strategy trims (416) | 0.0000 | +0.0126 | -0.0212 |
+| `charge_skipped`: charged less than the strategy in a charging hour (82) | 0.0000 | +0.0026 | +0.0311 |
+| `trim_deeper` (30) | 0.0000 | +0.0018 | -0.0014 |
+| `top_discharge_short` (17) | -0.0001 | -0.0030 | -0.0040 |
+| every other class | 0.0000 | at most 0.0010 either way | at most 0.0031 either way |
+
+- **The all-time peak gap is skipped shaves.** Putting back 35 building-hours of skipped shaves (17 hours, a mean gap of 0.09 to 0.18 by month) takes August from 0.8940 to the strategy's 0.8570 and July from 0.8822 to 0.8637. 29 of the 35 came after the day's top-price hours and 8 of the 17 hours fell on a flat-price day. In 16 of the 17 the agent's reason says it followed the strategy while calling the batteries idle ("batteries idle-ish per flat price with peak limiter", "battery near idle as SoC low"). The version 8 prompt allowed that reading twice: "Before them discharge only to shave" and "Idle on flat_24h days", with no word that the strategy shaves after the top price and on flat days.
+- **The daily peak gap** is the missed trim starts (+0.0126) and the skipped shaves (+0.0120). 415 of the 416 missed trim starts are `null` sent while the trim state was off (median 0.043 above the strategy's trim), the 0.9.0 habit version 8's wording did not end.
+- **Ramping:** skipped charges add 0.0311 over the four months; the missed trim starts take 0.0212 off.
+- `scripts/analyze_deviations.py` now reads version 8 runs: the strategy is the one the observation shows, replays run on the run's own month, and one class is new, `warm_skipped`.
+
+**August ramping, split** (`scripts/split_ramping.py`, now on any month of the month set; points of `ramping_average` above 1.0, against a scripted v8 August recorded offline):
+
+| Cause | Haiku v8 live (1.0157) | Scripted v8 (1.0100) | Agent minus strategy |
+|---|---|---|---|
+| Battery charging | +2.24 | +1.44 | +0.80 |
+| Battery discharging | -1.13 | -1.58 | +0.45 |
+| Trim start, end, depth | -2.95, +3.47, -0.09 | -2.40, +3.91, -0.39 | -0.69 |
+| Extra cooling | +0.02 | +0.02 | 0.00 |
+| Total | +1.57 | +1.00 | +0.57 |
+
+1.00 of the 1.57 points is the strategy itself, mostly its trim ends (+3.91: the envelope ends a trim at once at the setpoint or when the room empties, and eases it by at most 0.02 an hour). The agent adds 0.57: 1.25 from its battery (uneven charging, skipped shaves) less 0.69 from the trims it did not start.
+
+**The search** (`scripts/tune_strategy.py --version 9`, four months of the month set, scripted, the rule above applied as written). The diagnosis puts every all-time peak in an evening hour just after the top-price discharge, so the grid kept charge back through the top-price hours for that shave (`evening_reserve` 0 to 0.25), with the shave share (0.9, 0.8) and the grid charge rise (`charge_step` 0.15, 0.1, 0.05):
+
+- **First pass, 36 settings: none passed.** The reserve works (0.05: all-time peak 0.8643 against 0.8797, ramping 0.9788 against 0.9873) but costs about 0.003 per 0.05 (0.9117 against 0.9087). A slower charge rise lowers ramping but raises cost and the all-time peak; a lower shave share raises cost.
+- **Second pass, added after the first and reported here as such: 8 settings with smaller reserves** (0.01 to 0.04, `charge_step` 0.15 or 0.125). One passed: `evening_reserve` 0.01, everything else at version 8. On the four-month mean: all-time peak 0.876779 against 0.879746, ramping 0.985732 against 0.987321, cost +0.000596, emissions +0.000024, discomfort, too warm and outage energy unchanged to six decimals. It is lower on the all-time peak in every month and on ramping in three of four (July +0.0004). The same numbers come out of `hyperbolic months` with the shipped prompt version 9.
+- How it works, at tuning July's peak hour: each battery comes out of the top-price hours with 0.009 more charge (0.243 against 0.234), the shave discharges it (-0.041 against -0.033), and the peak falls from 12.49 to 12.42 kWh.
+
+Changes:
+
+- **Prompt version 9 (default).** The strategy is version 8's with `evening_reserve` 0.01 (`StrategyParamsV9`, `strategy_plan_v9`). The observation adds `peak.shave_now`, the strategy's own test for a peak hour. The system prompt says to send every number exactly ("battery -0.033 is not 0, and cooling under baseline_action is not null, trim state off too"), to shave in any hour `shave_now` is true, after the top price and on flat_24h days too, with whatever charge is left, and to keep 0.01 above the floor in the top-price hours; "Before them discharge only to shave" and "Idle on flat_24h days" are gone. Version 8 stays selectable and its requests are unchanged byte for byte.
+- **The holdout and its guard**: `HOLDOUT.md`, `holdout/citylearn_challenge_2023_phase_3_1` (copied unchanged), `hyperbolic months --holdout-final`, `hyperbolic compare --holdout-final`, a seal of file hashes checked before any scoring, `run --month holdout-06` (07, 08) recording without printing KPIs, and `months()` never listing it.
+- **Tools.** `scripts/analyze_peaks.py` (peak hours, the model against its strategy there, class replays, the ranking). `scripts/analyze_deviations.py` reads version 8 runs and keeps each replay's hourly grid draw. `scripts/split_ramping.py` resimulates tuning months. `scripts/tune_strategy.py --version 9` with `accepts_v9`.
+- `hyperbolic months` runs `v9` scripted too. `hyperbolic serve`'s first cost estimate uses the version 9 request size (4,810 input and 220 output tokens).
+- Tests cover the holdout (its months, the schema with only its buildings, the seal and a broken seal, the guard in `months`, `compare`, `run_month` and recorded runs, `run` printing no KPIs, the baseline loading), the peak hours and ranking, version 8 deviation classes and `warm_skipped`, replays on their own month and never the holdout, a CityLearn run that never shaves, the acceptance rule case by case and the pick, the version 9 grid, the version 9 observation, strategy, wording, request size and scripted reply, version 9 runs that replay on the fake district and on 24 hours of CityLearn, and the four 0.10.0 live months replaying hour for hour when they are on disk.
+
+**Estimates on the four months, no holdout** (scripted rows are not model results; the last two rows send the 0.10.0 live replies again with one or every class put back):
+
+| Mean of four months | cost | emissions | discomfort | too warm | ramping | daily peak | all-time peak | load factor | outage |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.4.0 rule-based | 0.9619 | 1.0002 | 0.1352 | 0.0188 | 1.0955 | 0.9847 | 0.9846 | 0.9851 | 0.1711 |
+| v8 scripted | 0.9087 | 0.9582 | 0.0208 | 0.0059 | 0.9873 | 0.8910 | 0.8797 | 0.9549 | 0.1711 |
+| **v9 scripted** | **0.9093** | **0.9582** | **0.0208** | **0.0059** | **0.9857** | **0.8898** | **0.8768** | **0.9540** | **0.1711** |
+| Haiku v8 live (0.10.0) | 0.9122 | 0.9609 | 0.0241 | 0.0066 | 0.9918 | 0.8958 | 0.8975 | 0.9557 | 0.1711 |
+| Haiku v8, skipped shaves put back | 0.9123 | 0.9608 | 0.0241 | 0.0066 | 0.9879 | 0.8928 | 0.8836 | 0.9535 | 0.1711 |
+| Haiku v8, every departure put back | 0.9076 | 0.9567 | 0.0198 | 0.0057 | 0.9869 | 0.8907 | 0.8833 | 0.9551 | 0.1711 |
+
+By month, v9 scripted: cost 0.9037, 0.9105, 0.9199, 0.9029; all-time peak 0.9586, 0.8516, 0.8445, 0.8524; ramping 0.9952, 0.9717, 0.9681, 1.0080 (August still above the baseline); clamped hours 22, 32, 10, 3, as v8.
+
+- If Haiku shaves after the top price under the new wording, the July and August all-time peaks should come down to near the strategy's (estimated 0.8637 and 0.8570 from the shaves alone with the version 8 strategy). Only a live run can show whether it does.
+- The v9 strategy's own gain is small: 0.003 on the all-time peak and 0.0016 on ramping for 0.0006 of cost. August ramping stays above 1.0 because of the trim ends the envelope fixes; this release does not change the envelope.
+
+**Request size and cost.** Over the same scripted phase 2 month a version 9 request averages 9,716 characters against 9,456 for version 8, 2.8 percent larger: the system prompt is 3,886 characters against 3,645 and the observation 18 longer; the reply schema is unchanged. Scaled from the 0.10.0 live months (4,676 input and 215 output tokens per call), a Haiku month should cost about $0.42 for 719 hours and $0.44 for 743 ($0.44 and $0.46 if replies run 25 percent longer); the hard worst case is $0.96 and $0.99, under the $2.00 cap. All four months should cost about $1.72 to $1.80, and the three holdout months about $1.30 to $1.36.
+
+The envelope is unchanged (`hyperbolic/envelope.py` is byte for byte 0.10.0's and `EnvelopeConfig` is still pinned to 0.8.0 by its test). The four 0.10.0 live months, the 0.9.0 and the 0.8.0 live months replay every hour (719, 719, 743, 743, 719, 719) with 0 API calls. No live model calls were made for this release, and nothing but the baseline has been run on the holdout.
+
 ## 0.10.0 (2026-10-23)
 
 Goal: find and close the gap between the 0.9.0 live agent and its own strategy, fix the hot-side comfort miss, and score everything on more than one month. The envelope does not change. The analysis, strategy and estimates below were built before any live call; the live months on all four months of the set follow them.
