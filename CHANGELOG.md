@@ -2,7 +2,7 @@
 
 ## 0.9.0 (2026-10-23)
 
-Goal: the agent proposes actions that already fit the envelope, so clamps drop sharply and ramping goes under 1.0, without giving back cost, emissions, comfort or peaks against the 0.8.0 live month. The envelope does not change. No live model calls were made for this release; everything below is built and estimated from recorded runs and the scripted strategy.
+Goal: the agent proposes actions that already fit the envelope, so clamps drop sharply and ramping goes under 1.0, without giving back cost, emissions, comfort or peaks against the 0.8.0 live month. The envelope does not change. The estimates below were built from recorded runs and the scripted strategy before any live call; the live month follows them.
 
 Why 312 of 719 hours were clamped in the 0.8.0 live month (390 clamps; `runs/live/...20261022T222703Z`):
 
@@ -65,7 +65,32 @@ Tuning set (three months, mean): the 0.4.0 rule-based controller cost 0.9621, em
 
 Request size and cost: a version 7 request averages 10,748 characters against 10,928 for version 6 over the same scripted month, 1.7 percent smaller: the system prompt 4,780 against 5,221 characters, the observation 231 characters longer, the schema unchanged. Scaled from the 0.8.0 live month (5,245 input and 429 output tokens per call, $0.5315), a Haiku month should cost about $0.53 ($0.5252 at the same reply length, $0.5327 if replies grow 5 percent). The hard worst case (every character a third of a token and a full 2,000 token reply) is $0.98 for all 719 hours, under the $2.00 cap.
 
+Live run (`claude-haiku-5-5`, full month, 719 hours, prompt version 7, run 20261023T135430Z), against the baseline, the 0.4.0 rule-based controller (run 20261022T162847Z) and the 0.8.0 live month:
 
+| CityLearn KPI (district), full month | Baseline | 0.4.0 rule-based | 0.8.0 live | 0.9.0 live |
+|---|---|---|---|---|
+| cost_total | 1.000 | 0.9611 | 0.9190 | 0.9245 |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9610 | 0.9648 |
+| electricity_consumption_total | 1.000 | 1.0073 | 0.9695 | 0.9744 |
+| discomfort_proportion (too cool, too warm) | 0.1714 (0.1538, 0.0176) | 0.1714 (0.1538, 0.0176) | 0.0769 (0.0601, 0.0168) | 0.0940 (0.0759, 0.0181) |
+| daily_peak_average | 1.000 | 0.9978 | 0.9264 | 0.9182 |
+| all_time_peak_average | 1.000 | 1.0000 | 0.9593 | 0.9412 |
+| ramping_average | 1.000 | 1.1309 | 1.0076 | 0.9864 |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9651 | 0.9566 |
+| power_outage_normalized_unserved_energy_total | 0.6844 | 0.6844 | 0.6850 | 0.6844 |
+| Clamped hours, fallback hours | | 1, 0 | 312, 0 | 27, 0 |
+| Model cost | | none | $0.5315 | $0.4607 |
+
+- **Clamped hours fell from 312 to 27** because version 7 shows the agent its allowed range each hour. 250 of the 0.8.0 clamps were held trims the envelope logged as clamps, not the agent breaking a limit.
+- **Ramping is under 1.0 for the first time since 0.4.0** (0.9864; 0.4.0 live: 0.9965).
+- **The best live run so far on the daily peak and the all-time peak** (0.9182 against 0.8.0 live's 0.9264, 0.9412 against 0.6.0 live's 0.9483). Load factor (0.9566) is second only to 0.4.0 live (0.9559), which left comfort at the baseline.
+- **Gives back a little against 0.8.0 live** on cost (0.9245 against 0.9190), emissions (0.9648 against 0.9610) and comfort (0.0940 against 0.0769).
+- **Beats or ties the 0.4.0 rule-based controller on every KPI except hot-side discomfort**, where it trails by 0.0005 (0.0181 against 0.0176). Thermal resilience ties at 0.3698, and unserved energy in outages now ties the baseline (0.6844).
+- **Valley filling stays off by default.** It cut tuning-set ramping further (0.9116 against 0.9823) but cost about 0.01 in cost (0.9181 against 0.9086).
+- 719 calls, 0 fallbacks, $0.4607 of $2.00, replays 719 of 719 hours deterministically.
+- The published viewer (`docs/data`) now shows the 0.9.0 live run in place of 0.8.0.
+
+## 0.8.0 (2026-10-22)
 
 Goal: carry the cooling trim hold in code so the live agent cannot drop it by accident, explain the 0.7.0 ramping rise first, and get live ramping below the baseline without giving back cost, emissions, comfort or the peaks against 0.6.0 live.
 

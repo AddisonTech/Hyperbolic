@@ -6,7 +6,7 @@ An AI supervisor that runs a simulated district and tries to beat the no-control
 
 Hyperbolic runs [CityLearn](https://github.com/citylearn-project/CityLearn), an open source district energy simulator, entirely on one machine. Every simulated hour it reads CityLearn's observations, forecasts and prices for all buildings, asks a language model for one action per device, passes the answer through a deterministic safety envelope, and applies what survives. Both the agent and the reference are scored by CityLearn's own KPI evaluation, so the numbers come from the benchmark, not from this project.
 
-Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.8.0 Haiku run (see [Version 0.8.0](#version-080)). It replaces the 0.6.0 live run there; the 0.7.0 live run scored worse and was never published (see [Version 0.7.0](#version-070)).
+Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.9.0 Haiku run (see [Version 0.9.0](#version-090)). It replaces the 0.8.0 live run there; the 0.7.0 live run scored worse and was never published (see [Version 0.7.0](#version-070)).
 
 To watch a run live on your own machine instead, see [Watch it live](#watch-it-live).
 
@@ -342,7 +342,7 @@ So the hold alone was not expected to bring live ramping below the baseline. 0.8
 
 ### Version 0.9.0
 
-**Goal:** the agent proposes actions that already fit the envelope, so clamps drop sharply and ramping goes under 1.0, without giving back cost, emissions, comfort or peaks against the 0.8.0 live month. The envelope is identical to 0.8.0. No live model calls were made for this release: everything here is built and estimated from recorded runs and the scripted strategy, and the live month is still to run.
+**Goal:** the agent proposes actions that already fit the envelope, so clamps drop sharply and ramping goes under 1.0, without giving back cost, emissions, comfort or peaks against the 0.8.0 live month. The envelope is identical to 0.8.0. The estimates below were built from recorded runs and the scripted strategy before any live call; the live month follows them.
 
 **Why 312 hours were clamped.** The 0.8.0 live month had 390 clamps in 312 hours: the trim hold 345 (292 hours), comfort 32, battery state of charge 10, the deviation cap 2, the peak limiter 1. What the agent asked for against what the hold allowed:
 
@@ -394,6 +394,35 @@ On the tuning months (mean of three) the v7 scripted strategy scores cost 0.9086
 - **Only a live run can measure** whether Haiku keeps inside the ranges, sends a number for a held trim, and follows `strategy_battery` more closely under the new wording, and how the month then evolves, since fixed replies cannot react.
 
 **Request size and cost.** A version 7 request averages 10,748 characters against 10,928 for version 6, 1.7 percent smaller (the system prompt is 441 characters shorter, the observation 231 longer). Scaled from the 0.8.0 live month, a Haiku month should cost about $0.53; the hard worst case is $0.98, under the $2.00 cap.
+
+**Live results.** The 0.9.0 live run (`claude-haiku-5-5`, full month, 719 hours, prompt version 7, $2.00 budget, run 20261023T135430Z) against the baseline, the 0.4.0 rule-based controller (run 20261022T162847Z) and the 0.8.0 live month:
+
+| CityLearn KPI (district), full month | Baseline | 0.4.0 rule-based | 0.8.0 live, Haiku | 0.9.0 live, Haiku |
+|---|---|---|---|---|
+| cost_total | 1.000 | 0.9611 | 0.9190 | **0.9245** |
+| carbon_emissions_total | 1.000 | 0.9947 | 0.9610 | **0.9648** |
+| electricity_consumption_total | 1.000 | 1.0073 | 0.9695 | **0.9744** |
+| discomfort_proportion | 0.1714 | 0.1714 | 0.0769 | **0.0940** |
+| too cool | 0.1538 | 0.1538 | 0.0601 | **0.0759** |
+| too warm | 0.0176 | 0.0176 | 0.0168 | **0.0181** |
+| daily_peak_average | 1.000 | 0.9978 | 0.9264 | **0.9182** |
+| all_time_peak_average | 1.000 | 1.0000 | 0.9593 | **0.9412** |
+| ramping_average | 1.000 | 1.1309 | 1.0076 | **0.9864** |
+| daily_one_minus_load_factor_average | 1.000 | 0.9913 | 0.9651 | **0.9566** |
+| one_minus_thermal_resilience_proportion | 0.3698 | 0.3698 | 0.3698 | **0.3698** |
+| power_outage_normalized_unserved_energy_total | 0.6844 | 0.6844 | 0.6850 | **0.6844** |
+| Clamped hours, fallback hours | | 1, 0 | 312, 0 | **27, 0** |
+| Model cost | | none | $0.5315 | **$0.4607** |
+
+- **Clamped hours fell from 312 to 27.** Version 7 shows the agent its allowed range each hour, and 250 of the 0.8.0 clamps were held trims the envelope logged as clamps, not the agent breaking a limit.
+- **Ramping is under 1.0 for the first time since 0.4.0** (0.9864; 0.4.0 live: 0.9965).
+- **It is the best live run so far on the daily peak and the all-time peak** (0.9182 against 0.8.0 live's 0.9264, and 0.9412 against 0.6.0 live's 0.9483). Load factor (0.9566) is second only to 0.4.0 live (0.9559), which left comfort at the baseline.
+- **Against 0.8.0 live it gives back a little** cost (0.9245 against 0.9190), emissions (0.9648 against 0.9610) and comfort (0.0940 against 0.0769).
+- **Against the 0.4.0 rule-based controller it beats or ties on every KPI except hot-side discomfort**, where it trails by 0.0005 (0.0181 against 0.0176). Unserved energy in outages now ties the baseline (0.6844).
+- **Valley filling stays off by default.** On the tuning months it cut ramping further (0.9116 against 0.9823) but cost about 0.01 in cost (0.9181 against 0.9086).
+- 0 fallbacks. The run cost $0.4607 of the $2.00 budget (719 calls) and replays 719 of 719 hours deterministically.
+
+**The published viewer now shows the 0.9.0 live run** in place of 0.8.0 (the page's headline: cost down 7.5 percent, emissions down 3.5 percent).
 
 ## What the agent sees
 
@@ -562,7 +591,7 @@ CI (GitHub Actions) runs the tests on Python 3.10 and 3.12 with CPU-only torch, 
 ## Honest limits
 
 - **Simulator only.** CityLearn models buildings with data-driven load profiles and an LSTM for indoor temperature. Beating its reference is evidence worth investigating, not proof of field savings.
-- **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. In 0.6.0 it beat it on every one of those. In 0.8.0 it beat it on every KPI except unserved energy in outages, by 0.0006. From 0.6.0 the rule-based check is frozen at its 0.4.0 settings so the bar does not move.
+- **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. In 0.6.0 it beat it on every one of those. In 0.8.0 it beat it on every KPI except unserved energy in outages, by 0.0006. In 0.9.0 it beat or tied it on every KPI except hot-side discomfort, by 0.0005. From 0.6.0 the rule-based check is frozen at its 0.4.0 settings so the bar does not move.
 - **The scripted version 4 and 5 strategies are not model results either.** They show that the strategy the agent is given beats the rule-based controller when followed literally. A live model reads the same strategy and may follow it more or less closely.
 - **The peak limiter uses this hour's load.** It reads the draw CityLearn is about to simulate for this hour (plug load, solar, hot water demand, cooling), the equivalent of a meter reading in a real building. The forecast of the day's peak is built only from past days. The agent itself sees only the same values the limiter uses, never the rest of the day.
 - **Ramping is a sum of rises, against CityLearn's own reference.** Smoothing that only spreads a rise over more hours does not lower it, which is why the trims are held rather than tapered. The denominator is built inside each run, so an agent's actions in an outage hour can move it (see [Version 0.8.0](#version-080)). The remaining up-ramp is mostly the baseline's own evening rise and the end of the top-price discharge.
