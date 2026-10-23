@@ -30,6 +30,11 @@ reads only what a version 7 observation already has):
 A class's share of the gap is (control - class) / (control - strategy) on each KPI. The classes
 interact (a trim started earlier changes the rooms later), so the shares need not add up to 1.
 These are evaluations, never recorded runs.
+
+From 0.11.0 a prompt version 8 run works the same way against its own strategy: the strategy's
+action is the one the observation already shows (strategy, from strategy_plan_v8), class replays
+put back strategy_plan_v8's action, and the run is replayed on its own month of the month set.
+One class is new for it: warm_skipped, cooling below the strategy's extra cooling in a warm room.
 """
 
 from __future__ import annotations
@@ -49,6 +54,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from evaluate_hold import KPI_KEYS  # noqa: E402
 
+from hyperbolic import district as dc  # noqa: E402
+from hyperbolic import months as mo  # noqa: E402
 from hyperbolic.envelope import Envelope, EnvelopeConfig  # noqa: E402
 from hyperbolic.model import (  # noqa: E402
     Budget,
@@ -73,6 +80,7 @@ CLASSES = {
     "trim_unwanted": ("cooling", "a trim where the strategy has none"),
     "trim_ended_early": ("cooling", "ended a held trim early with end_trim"),
     "extra_cooling": ("cooling", "cooling above the strategy's"),
+    "warm_skipped": ("cooling", "less than the strategy's extra cooling in a warm room"),
     "top_discharge_short": ("battery", "discharged less than the strategy in a top-price hour"),
     "top_discharge_over": ("battery", "discharged more than the strategy in a top-price hour"),
     "shave_skipped": ("battery", "skipped or cut a peak-shaving discharge"),
@@ -125,6 +133,8 @@ def classify(obs: dict, reply: dict, strategy: dict | None = None) -> list[tuple
                 out.append((b, "trim_unwanted"))
             elif hc > sc:
                 out.append((b, "extra_cooling"))
+            elif sc > base + COOLING_TOL:
+                out.append((b, "warm_skipped"))
         hb, sb = _value(mine, "battery", 0.0), _value(plan, "battery", 0.0)
         if abs(hb - sb) > STORAGE_TOL:
             mode = battery_mode(obs, b, sb)
@@ -168,18 +178,27 @@ def context(obs: dict, b: str) -> dict:
     }
 
 
+def strategy_for(obs: dict) -> dict:
+    """The strategy's action per building for a version 7 or 8 observation: what version 8 shows as
+    strategy, or what strategy_plan_v7 sends for a version 7 one."""
+    first = next(iter(obs["buildings"].values()))
+    if "strategy" in first:
+        return {b: s["strategy"] for b, s in obs["buildings"].items()}
+    if "cooling_range" not in first:
+        raise ValueError("this needs a prompt version 7 or 8 run")
+    return strategy_plan_v7(obs)
+
+
 def deviations(run_dir: Path) -> list[dict]:
-    """Every departure in a recorded version 7 run: step, building, class, device, the model's and the
-    strategy's values and when it happened."""
+    """Every departure in a recorded version 7 or 8 run: step, building, class, device, the model's and
+    the strategy's values and when it happened."""
     rows = []
     for rec in load_jsonl(run_dir / "calls.jsonl"):
         text = rec["reply"].get("text")
         if not text:
             continue
         obs = observation_from_request(rec["request"])
-        if "cooling_range" not in next(iter(obs["buildings"].values())):
-            raise ValueError("this needs a prompt version 7 run")
-        reply, plan = json.loads(text), strategy_plan_v7(obs)
+        reply, plan = json.loads(text), strategy_for(obs)
         for b, cls in classify(obs, reply, plan):
             device = CLASSES[cls][0]
             base = obs["buildings"][b]["baseline_action"].get(device) or 0.0
@@ -233,17 +252,35 @@ class ReplacingSupervisor(RecordedReplySupervisor):
         return res
 
 
+def month_schema_for(m: dict, out: Path) -> Path | None:
+    """The schema of the month a run's manifest records (None for the phase 2 month, CityLearn's
+    default). Only the month set: a holdout run is refused."""
+    if m.get("dataset", dc.DATASET) == dc.DATASET:
+        return None
+    by_dataset = {x.dataset: x for x in mo.months()}
+    if m["dataset"] not in by_dataset:
+        raise ValueError(f"dataset {m['dataset']!r} is not in the month set")
+    return mo.month_schema(by_dataset[m["dataset"]], out)
+
+
 def _replay(job: tuple[str, str, list, int]) -> dict:
     """job: (name, run dir, points to replace, strategy version). control replays the recorded replies;
     strategy and v8 strategy run that version's scripted strategy on its own."""
+    import tempfile
+
     import torch
 
     torch.set_num_threads(1)  # one simulation per process
-    from hyperbolic.sim import CityLearnSimulator
-
     name, run, replace, plan = job
     run_dir = Path(run)
     m = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as tmp:
+        return _replay_in(name, run_dir, m, replace, plan, month_schema_for(m, Path(tmp)))
+
+
+def _replay_in(name: str, run_dir: Path, m: dict, replace: list, plan: int, schema: Path | None) -> dict:
+    from hyperbolic.sim import CityLearnSimulator
+
     sup = m["supervisor"]
     calls = run_dir / "calls.jsonl"
     version = int(sup["prompt_version"])
@@ -256,24 +293,40 @@ def _replay(job: tuple[str, str, list, int]) -> dict:
     ctl = AgentController(supervisor=supervisor, envelope=Envelope(EnvelopeConfig.from_manifest(m["envelope"])),
                           budget=Budget(limit_usd=float(sup["budget_usd"])), max_tokens=int(sup["max_tokens"]),
                           effort=sup["effort"], prompt_version=version)
-    res = run_session(CityLearnSimulator(control=True), ctl, NullWriter(), hours=m.get("hours_limit"),
+    writer = SeriesWriter()
+    res = run_session(CityLearnSimulator(control=True, schema=schema), ctl, writer, hours=m.get("hours_limit"),
                       sim_info={"kind": "citylearn", "control": True}, log=lambda *_: None)
     return {"name": name, "kpis": {k: res["district_kpis"][k] for k in KPI_KEYS},
-            "clamped": res["clamped_steps"], "fallback": res["fallback_steps"]}
+            "clamped": res["clamped_steps"], "fallback": res["fallback_steps"], "grid_kwh": writer.grid_kwh}
+
+
+class SeriesWriter(NullWriter):
+    """Keeps each hour's grid draw per building, so a replay's peaks can be found."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.grid_kwh: dict[str, list[float]] = collections.defaultdict(list)
+
+    def step(self, rec: dict) -> None:
+        for b, o in rec["outcome"].items():
+            self.grid_kwh[b].append(o["grid_kwh"])
 
 
 def attribute(run_dir: Path, rows: list[dict], jobs: int | None = None, classes: list[str] | None = None,
               estimates: bool = True) -> dict:
-    """KPIs for control, each class replaced on its own, all classes, the strategy and, with
-    estimates, the three prompt version 8 replays."""
+    """KPIs for control, each class replaced on its own, all classes, the strategy and, for a version 7
+    run with estimates, the three prompt version 8 replays. A version 8 run is measured against the
+    version 8 strategy."""
+    version = int(json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))["supervisor"]["prompt_version"])
+    plan = 8 if version >= 8 else 7
     points = collections.defaultdict(set)
     for r in rows:
         points[r["class"]].add((r["step"], r["building"], r["device"]))
     classes = [c for c in (classes or CLASSES) if points[c]]
     every = sorted(set().union(*(points[c] for c in classes))) if classes else []
-    work = [("control", str(run_dir), [], 7), ("strategy", str(run_dir), [], 7)]
-    work += [(c, str(run_dir), sorted(points[c]), 7) for c in classes] + [("all", str(run_dir), every, 7)]
-    if estimates:
+    work = [("control", str(run_dir), [], plan), ("strategy", str(run_dir), [], plan)]
+    work += [(c, str(run_dir), sorted(points[c]), plan) for c in classes] + [("all", str(run_dir), every, plan)]
+    if estimates and plan == 7:
         steps = sorted({r["step"] for r in load_jsonl(run_dir / "calls.jsonl")})
         buildings = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))["buildings"]
         work += [("v8 top class", str(run_dir), sorted(points["trim_not_started"]), 8),
@@ -309,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     rows = deviations(args.run_dir)
     summ = summary(rows)
-    print(f"{args.run_dir.name}: departures from the version 7 strategy, by class (building-hours)")
+    print(f"{args.run_dir.name}: departures from its strategy, by class (building-hours)")
     for cls, s in sorted(summ.items(), key=lambda x: -x[1]["count"]):
         print(f"  {cls:<20} {s['count']:>4} in {s['hours']:>3} hours, mean gap {s['mean_gap']:.4f}: {CLASSES[cls][1]}")
         for k in ("price", "occupied", "outdoor_c", "soc", "room", "building"):
@@ -330,10 +383,11 @@ def main(argv: list[str] | None = None) -> int:
     print("\nshare of the control to strategy gap explained")
     for n in order[2:]:
         print(f"  {n:<20}" + "".join(f"{'n/a' if sh[n][k] is None else format(sh[n][k], '.2f'):>15}" for k in SHOW))
-    print("\nestimates for prompt version 8: the model's replies with the version 8 strategy filled in")
-    for n in ("control", "v8 top class", "v8 cooling", "v8 strategy"):
-        r = results[n]
-        print(f"  {n:<20}" + "".join(f"{r['kpis'][k]:>15.4f}" for k in SHOW) + f"{r['clamped']:>9}")
+    if "v8 strategy" in results:
+        print("\nestimates for prompt version 8: the model's replies with the version 8 strategy filled in")
+        for n in ("control", "v8 top class", "v8 cooling", "v8 strategy"):
+            r = results[n]
+            print(f"  {n:<20}" + "".join(f"{r['kpis'][k]:>15.4f}" for k in SHOW) + f"{r['clamped']:>9}")
     if args.out:
         args.out.write_text(json.dumps({"summary": summ, "results": results, "shares": sh}, indent=2, sort_keys=True),
                             encoding="utf-8")

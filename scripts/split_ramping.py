@@ -47,12 +47,21 @@ TRIM_MIN = 0.002  # a trim is cooling more than this below the baseline action (
 
 
 def resimulate(run_dir: Path):
-    """Run a recorded run's actions through CityLearn again. Returns (CityLearnEnv, steps)."""
+    """Run a recorded run's actions through CityLearn again, on the month it was recorded on.
+    Returns (CityLearnEnv, steps)."""
+    import tempfile
+
+    from hyperbolic import district as dc
+    from hyperbolic import months as mo
     from hyperbolic.sim import CityLearnSimulator
 
     steps = load_jsonl(Path(run_dir) / "steps.jsonl")
     m = json.loads((Path(run_dir) / "manifest.json").read_text(encoding="utf-8"))
-    sim = CityLearnSimulator(control=steps[0]["actions"] is not None)
+    schema = None
+    if m.get("dataset", dc.DATASET) != dc.DATASET:  # a tuning month (never the holdout)
+        month = {x.dataset: x for x in mo.months()}[m["dataset"]]
+        schema = mo.month_schema(month, Path(tempfile.mkdtemp(prefix="hyperbolic_")))
+    sim = CityLearnSimulator(control=steps[0]["actions"] is not None, schema=schema)
     state = sim.start(m.get("hours_limit"))
     i = 0
     while state is not None and i < len(steps):
