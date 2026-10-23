@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hyperbolic"
-version = "0.9.0"
+version = "0.10.0"
 description = "Supervisory control for CityLearn district simulations, behind a deterministic safety envelope."
 readme = "README.md"
 license = { text = "MIT" }
