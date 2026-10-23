@@ -196,6 +196,7 @@ CONTROLLERS = {
     "rule": ("0.4.0 rule-based", 3, True),
     "v7": ("v7 scripted", 7, True),
     "v8": ("v8 scripted", 8, True),
+    "v9": ("v9 scripted", 9, True),
 }
 
 

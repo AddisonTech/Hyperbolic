@@ -56,6 +56,18 @@ The qualifying candidate with the lowest cost plus emissions wins, the lower too
 breaking ties; with none, no extra cooling is shipped. (A first rule that also held cost,
 emissions, both peaks and ramping within 0.001 of the reference qualified none of the 36: the
 cheapest full fix costs about 0.002 of cost, and the night rule costs more and clears no warm hour.)
+
+Version 9 (0.11.0) searches where the 0.10.0 peak diagnosis (scripts/analyze_peaks.py) points: the
+all-time peak falls in an evening hour just after the top-price discharge, with the batteries at
+their floor, so the grid has charge kept back through the top-price hours for the evening shave
+(StrategyParamsV9.evening_reserve), the share of the forecast peak that counts as a peak hour
+(shave), and how fast a grid charge may rise (charge_step), with the 0.8.0 rules, unchanged. It runs
+on the four months of the month set (the phase 2 month and the three tuning months; never the
+holdout) and applies the acceptance rule written into the CHANGELOG before any version 9 result
+(accepts_v9): on the mean of the four months, a lower all-time peak and lower ramping than the
+shipped version 8 strategy, cost, emissions, discomfort and too warm no more than 0.001 higher, and
+unserved energy in outages no higher. The passing candidate with the lowest all-time peak plus
+ramping wins, the lower cost breaking ties; with none, nothing new ships.
 """
 
 from __future__ import annotations
@@ -134,6 +146,24 @@ GRID_V8_MIX = ({"warm_margin_c": 1.5, "warm_boost": 0.1, "warm_ramp_c": 0.0},
                {"warm_margin_c": 1.0, "warm_boost": 0.1, "warm_ramp_c": 1.0})
 GRID_V8 = (*GRID_V8_WARM, *GRID_V8_NIGHT)
 V8_SLACK = 0.001
+# Version 9: everything else at the shipped version 8 numbers.
+GRID_V9 = {
+    "evening_reserve": (0.0, 0.05, 0.1, 0.15, 0.2, 0.25),
+    "shave": (0.9, 0.8),
+    "charge_step": (0.15, 0.1, 0.05),
+}
+# A second, finer pass, added after the first passed none: the reserve's cost grows about 0.003 per
+# 0.05, so smaller reserves are the only ones that could stay within 0.001 of cost.
+GRID_V9_FINE = {
+    "evening_reserve": (0.01, 0.02, 0.03, 0.04),
+    "shave": (0.9,),
+    "charge_step": (0.15, 0.125),
+}
+OUTAGE = "power_outage_normalized_unserved_energy_total"
+# The acceptance rule (CHANGELOG, 0.11.0), on the mean of the four months against v8 scripted.
+V9_IMPROVE = ("all_time_peak_average", "ramping_average")
+V9_HOLD = ("cost_total", "carbon_emissions_total", "discomfort_proportion", "discomfort_hot_proportion")
+V9_SLACK = 0.001
 
 
 def month_datasets(out: Path) -> list[Path]:
@@ -179,7 +209,7 @@ def kpis(job: tuple[str, dict | None, str]) -> dict:
     res = run_session(CityLearnSimulator(control=control, schema=Path(schema)), controller, NullWriter(),
                       log=lambda *_: None)
     k = res["district_kpis"]
-    return ({key: k.get(key) for key in (*KEYS, *COMFORT)}
+    return ({key: k.get(key) for key in (*KEYS, *COMFORT, OUTAGE)}
             | {"clamped": res["clamped_steps"], "fallback": res["fallback_steps"]})
 
 
@@ -236,7 +266,7 @@ def line(name: str, k: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6, 7, 8))
+    ap.add_argument("--version", type=int, default=5, choices=(4, 5, 6, 7, 8, 9))
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--jobs", type=int, default=None, help="parallel simulations (default: one per CPU)")
     ap.add_argument("--out", type=Path, default=None, help="optionally write every result as JSON")
@@ -250,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
         return main_v7(args)
     if args.version == 8:
         return main_v8(args)
+    if args.version == 9:
+        return main_v9(args)
     with tempfile.TemporaryDirectory() as tmp:
         months = [str(d / "schema.json") for d in month_datasets(Path(tmp))]
         candidates = [asdict(StrategyParams())] if args.quick else [
@@ -441,6 +473,74 @@ def main_v8(args) -> int:
         print("none qualifies: no extra cooling")
     if args.out:
         args.out.write_text(json.dumps({"baseline": base, "v7": ref, "rows": rows, "best": best},
+                                       indent=2, sort_keys=True), encoding="utf-8")
+    return 0
+
+
+def grid_v9() -> list[dict]:
+    """The version 9 grid around the shipped version 8 numbers, then the finer second pass; the first
+    candidate is version 8 itself."""
+    v8 = asdict(StrategyParamsV8())
+    return [{**v8, **dict(zip(g, combo))} for g in (GRID_V9, GRID_V9_FINE) for combo in itertools.product(*g.values())]
+
+
+def accepts_v9(k: dict, ref: dict) -> bool:
+    """The 0.11.0 acceptance rule on four-month means: all-time peak and ramping below ref's; cost,
+    emissions, discomfort and too warm no more than V9_SLACK above ref's; outage energy not above it."""
+    return (all(k[x] < ref[x] for x in V9_IMPROVE)
+            and all(k[x] <= ref[x] + V9_SLACK for x in V9_HOLD)
+            and k[OUTAGE] <= ref[OUTAGE])
+
+
+def pick_v9(rows: list[dict]) -> dict | None:
+    """The passing candidate with the lowest all-time peak plus ramping, the lower cost breaking ties."""
+    passing = [r for r in rows if r["accepted"]]
+    if not passing:
+        return None
+    return min(passing, key=lambda r: (r["kpis"]["all_time_peak_average"] + r["kpis"]["ramping_average"],
+                                       r["kpis"]["cost_total"], json.dumps(r["params"], sort_keys=True)))
+
+
+def mean_v9(rows: list[dict]) -> dict:
+    """Four-month means at CityLearn's six decimals, as hyperbolic months reports them."""
+    return {k: sum(r[k] for r in rows) / len(rows) for k in (*KEYS, *COMFORT, OUTAGE, "clamped")}
+
+
+def line_v9(name: str, k: dict) -> str:
+    return line_v8(name, k) + f" outage {k[OUTAGE]:.4f}"
+
+
+def main_v9(args) -> int:
+    """Charge kept for the evening shave, the shave share and the charge rise on the four months of the
+    month set, against the shipped version 8 strategy, under the 0.11.0 acceptance rule."""
+    with tempfile.TemporaryDirectory() as tmp:
+        months = [str(mo.month_schema(m, Path(tmp))) for m in mo.months()]
+        candidates = [asdict(StrategyParamsV8())] if args.quick else grid_v9()
+        jobs = [("baseline", None, m) for m in months] + [("strategy8", asdict(StrategyParamsV8()), m) for m in months]
+        jobs += [("strategy8", c, m) for c in candidates for m in months]
+        with cf.ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp.get_context("spawn")) as pool:
+            results = list(pool.map(kpis, jobs))
+    n = len(months)
+    base, ref = mean_v9(results[:n]), mean_v9(results[n:2 * n])
+    print(f"month set: {', '.join(m.key for m in mo.months())}, mean over {n} months")
+    print(line_v9("baseline", base))
+    print(line_v9("v8 shipped", ref))
+    rows = []
+    for i, c in enumerate(candidates):
+        got = results[2 * n + i * n:2 * n + (i + 1) * n]
+        k = mean_v9(got)
+        rows.append({"params": c, "kpis": k, "months": got, "accepted": accepts_v9(k, ref)})
+        print(line_v9(" ".join(f"{g}={c[g]}" for g in GRID_V9), k) + (" passes" if rows[-1]["accepted"] else ""))
+    best = pick_v9(rows)
+    print(f"{sum(r['accepted'] for r in rows)} of {len(rows)} candidates pass the acceptance rule")
+    if best is None:
+        print("none passes: nothing new ships, version 8 stays")
+    else:
+        print(line_v9("best", best["kpis"]))
+        v8 = asdict(StrategyParamsV8())
+        print(f"best settings differ from version 8 in: {({k: v for k, v in best['params'].items() if v != v8[k]})}")
+    if args.out:
+        args.out.write_text(json.dumps({"baseline": base, "v8": ref, "rows": rows, "best": best},
                                        indent=2, sort_keys=True), encoding="utf-8")
     return 0
 
