@@ -1,6 +1,71 @@
 # Changelog
 
-## 0.8.0 (2026-10-22)
+## 0.9.0 (2026-10-23)
+
+Goal: the agent proposes actions that already fit the envelope, so clamps drop sharply and ramping goes under 1.0, without giving back cost, emissions, comfort or peaks against the 0.8.0 live month. The envelope does not change. No live model calls were made for this release; everything below is built and estimated from recorded runs and the scripted strategy.
+
+Why 312 of 719 hours were clamped in the 0.8.0 live month (390 clamps; `runs/live/...20261022T222703Z`):
+
+- **By rule** (hours, clamps): trim hold 292, 345; comfort 28, 32; battery state of charge 6, 10; cooling deviation 2, 2; peak limiter 1, 1. By building: the hold clamped Building_1 cooling 243 times, Building_3 100 and Building_2 2; comfort 19, 7 and 6.
+- **The trim hold's 345 clamps, what the agent asked for against what the hold allowed:**
+  - 250 (72 percent) were `null` on a held trim: 175 in the hold zone (room more than 0.5 C below its setpoint), where the hold restored a median 0.068 of depth, and 75 in the ease zone (0.040). The version 6 prompt said `null` keeps a held trim, and it does, but the envelope logs the kept trim as a clamp. In 208 hours these were the only clamps.
+  - 52 ended the trim without `end_trim` by sending the baseline: 37 with the room still more than 0.5 C too cold (ended early) and 15 in the ease zone (released at once instead of by 0.02 an hour).
+  - 38 eased too fast: 31 in the hold zone, where no easing is allowed (median 0.025 short), and 7 by more than 0.02 in the ease zone (median 0.022 short).
+  - 5 asked for a trim where the hold had ended (all Building_1, room at or above its setpoint).
+  - None deepened a trim when it should hold: a deeper trim is always allowed.
+  - Every one of the 340 held-trim clamps came with the held depth already in the observation (`cooling_trim_held`). The agent saw the number; the prompt told it `null` was enough.
+- **The other 45 clamps:** 21 of the 32 comfort clamps were rounding under 0.002 (the agent copied the 3 decimal baseline: 15 a hair above it in a cool room, 6 a hair below it in a warm one); 11 were real (8 extra cooling in a cool room, 3 trims in a warm one). 10 state of charge clamps (charging past 0.95, by 0.0004 to 0.13), 2 deviation clamps and 1 peak limiter trim.
+- **What the agent could have avoided by seeing the constraint:** the live month's own replies, fitted into the ranges the version 7 observation shows (`scripts/evaluate_fit.py`), leave 7 clamped hours of 312 (305 avoidable, 98 percent of hours and of clamps), with every KPI equal to four decimals. The 7 left: 6 hours where the held trim is deeper than the baseline cooling, so cooling 0 is the most a reply can give and the hold still logs a clamp (requested 0, applied 0), and the 1 peak limiter trim.
+
+Why ramping stayed above 1.0 (`scripts/split_ramping.py`, points of `ramping_average` above 1.0, 0.4.0 live against 0.8.0 live; the reference's own rises 470.20 and 470.55 kWh):
+
+| Cause | 0.4.0 live (0.9965) | 0.8.0 live (1.0076) | Change |
+|---|---|---|---|
+| Battery charging | +1.24 | +1.90 | +0.66 |
+| Battery discharging | -1.59 | -2.01 | -0.42 |
+| Cooling trims (start, end, depth) | 0.00 | +0.86 (-2.03, +2.74, +0.15) | +0.86 |
+| Other (tank, extra cooling, rounding, outage hours) | 0.00 | +0.01 | +0.01 |
+| **Total** | **-0.35** | **+0.76** | **+1.11** |
+
+- 0.4.0 left comfort at the baseline, so it had no trims. Most of the rise is the trims that bought 0.8.0's comfort, and the rest is net battery: 0.8.0's discharging cut more, but its charging added more. Its largest single battery rise is the top-price discharge stopping at 7 pm (63.3 kWh over the month; 0.4.0 spread its discharge ends over 4 to 7 pm and 11 pm, 33.4 kWh at 7 pm).
+- The live agent sent `strategy_battery` in 1,994 of 2,157 building hours. In the other 163 it skipped a charge 70 times, charged when the plan was idle 51 times and skipped a discharge 34 times, mostly peak shaving. Those 163 hours are worth about 1.9 points: the same month with the battery plan followed exactly scores 0.9884 (battery charging +1.42, discharging -3.52).
+- An envelope change is not the fix. 0.7.0 measured a ramp rule in the envelope and it made ramping worse, and the evidence here points at the strategy and at following it.
+
+Changes:
+
+- **Prompt version 7 (default).** Each building shows what the envelope allows this hour: `trim` (`depth`, `state` off, hold, ease or end, `why`, `min_depth` while a trim is held, `end_trim_ok`), `cooling_range` and `battery_range` (the values that pass the range, rate, state of charge, deviation, comfort and hold rules without a clamp, 4 decimals rounded inward; `null` when only the exact baseline passes), and `last_clamp`, last hour's clamps on that building with their reasons, in place of the district-wide `last_clamps`. `cooling_trim_held` and `cooling_trim_last_hour` are dropped. The prompt now says `null` is exactly the baseline, to be used only when the trim state is off or end, and that a held trim takes a number inside `cooling_range`. Version 6 stays selectable and recorded version 6 runs replay byte for byte.
+- **The ranges are worked out read only from the envelope's own state** (`prompt.cooling_range`, `battery_range`, `trim_view`), in its own rule order, so a value inside them is never clamped. A randomized test holds that against `Envelope.apply`. `hyperbolic/envelope.py` is unchanged.
+- **Battery guidance.** `strategy_battery` now comes from `battery_plan_v7` (`StrategyParamsV7`), which can cap how fast a battery action rises (on charging and discharging, or on a discharge winding down only) and fill the valley when grid charging. Searched on the tuning months (`scripts/tune_strategy.py --version 7`, 36 settings): no cap and no valley filling kept cost, emissions, discomfort and both peaks at version 6's battery plan. Every cap raised cost and the all-time peak; a cap of 0.1 left ramping at 0.9965 against 0.9823, and capping only the discharge wind-down raised it to 1.0016, because it spends the charge the evening shave needs. Charging at 0.1 instead of 0.15 cut ramping to 0.9644 but raised cost (0.9103 against 0.9086) and the all-time peak (0.8632 against 0.8526); valley filling cut it to 0.9116 at cost 0.9181. So the shipped plan is version 5's (cap 1, which is no cap), and the prompt's battery point targets the deviations: send `strategy_battery` as given, and when differing stay within 0.1 of it and never skip a peak-shaving discharge. No new envelope limit.
+- **Scripted version 7 strategy** (`strategy_plan_v7`, `--scripted --prompt-version 7`): the version 5 cooling trim fitted into `cooling_range` (a held trim is never left to `null`) and the battery plan within `battery_range`.
+- **Tools.** `scripts/evaluate_fit.py` sends a recorded version 6 run's replies through its own rules three ways: as recorded (a control that must reproduce its published KPIs), fitted to the version 7 ranges, and fitted with `strategy_battery` followed. These are evaluations, never recorded runs.
+- `hyperbolic serve`'s first cost estimate uses the version 7 request size (5,160 input and 450 output tokens).
+- Tests cover `EnvelopeConfig` defaults equal to 0.8.0 field by field (and the 0.7.0 and 0.4.0 rule sets), the 0.8.0 live month replaying 719 of 719 hours when it is on disk, the version 7 observation and its dropped fields, every trim state with `min_depth` and `end_trim_ok`, both ranges, any value inside them passing unclamped, a held trim left to `null` being clamped while the top of its range is not, `last_clamp`, the shipped battery plan equal to version 5's and inside `battery_range`, the cap winding a discharge down and leaving spare solar alone, valley filling, the prompt's wording and size, the scripted version 7 reply, fake-district and 24 hour CityLearn version 7 runs that replay identically, a full version 7 CityLearn month, the fitting evaluation and the search grid.
+
+Estimates, no live calls. Scripted columns are not model results.
+
+Phase 2 month (719 hours):
+
+| CityLearn KPI (district) | 0.4.0 rule-based (20261022T162847Z) | 0.8.0 live | v6 scripted | v7 scripted | 0.8.0 live replies fitted to v7 | fitted, battery plan followed |
+|---|---|---|---|---|---|---|
+| cost_total | 0.9611 | 0.9190 | 0.9017 | 0.9016 | 0.9190 | 0.9182 |
+| carbon_emissions_total | 0.9947 | 0.9610 | 0.9430 | 0.9429 | 0.9610 | 0.9603 |
+| discomfort_proportion | 0.1714 | 0.0769 | 0.0430 | 0.0430 | 0.0769 | 0.0769 |
+| ramping_average | 1.1309 | 1.0076 | 0.9957 | 0.9952 | 1.0076 | 0.9884 |
+| daily_peak_average | 0.9978 | 0.9264 | 0.9078 | 0.9076 | 0.9264 | 0.9202 |
+| all_time_peak_average | 1.0000 | 0.9593 | 0.9593 | 0.9588 | 0.9593 | 0.9585 |
+| daily_one_minus_load_factor_average | 0.9913 | 0.9651 | 0.9640 | 0.9640 | 0.9651 | 0.9584 |
+| Clamped hours | 1 | 312 | 139 | 22 | 7 | 7 |
+
+Tuning set (three months, mean): the 0.4.0 rule-based controller cost 0.9621, emissions 1.0021, discomfort 0.1231, ramping 1.0838, daily peak 0.9804, all-time peak 0.9794, load factor 0.9831, 0.3 clamped hours; v6 scripted 0.9086, 0.9607, 0.0310, 0.9821, 0.8836, 0.8530, 0.9522, 112.0; v7 scripted 0.9086, 0.9607, 0.0312, 0.9823, 0.8837, 0.8526, 0.9525, 14.3. The tuning set has no live run.
+
+- **Scripted v7 matches v6 and cuts clamped hours from 139 to 22** on the phase 2 month (112 to 14.3 a month on the tuning set). The 22 left are 21 hours where the held trim is deeper than the baseline cooling and 1 peak trim. Tuning-set discomfort is 0.0312 against 0.0310 because the v6 strategy's trims sat up to 0.002 shallower than the held depth, inside the hold's rounding allowance, and the v7 ranges hold the exact depth.
+- **The live replies fitted to the ranges** reproduce the 0.8.0 live KPIs to four decimals with 7 clamped hours.
+- **With the battery plan followed as well**, ramping is 0.9884, and cost, emissions, both peaks and load factor improve on 0.8.0 live at the same discomfort. Unserved energy in outages is 0.6861 against 0.6850 (baseline 0.6844).
+- **What only a live run can measure:** whether Haiku keeps inside the ranges and sends a number for a held trim, how closely it follows `strategy_battery` under the new wording, and how the rooms and batteries then evolve, since fixed replies cannot react. The fitted columns assume a model that obeys the ranges; the battery column assumes one that sends `strategy_battery` every hour.
+
+Request size and cost: a version 7 request averages 10,748 characters against 10,928 for version 6 over the same scripted month, 1.7 percent smaller: the system prompt 4,780 against 5,221 characters, the observation 231 characters longer, the schema unchanged. Scaled from the 0.8.0 live month (5,245 input and 429 output tokens per call, $0.5315), a Haiku month should cost about $0.53 ($0.5252 at the same reply length, $0.5327 if replies grow 5 percent). The hard worst case (every character a third of a token and a full 2,000 token reply) is $0.98 for all 719 hours, under the $2.00 cap.
+
+
 
 Goal: carry the cooling trim hold in code so the live agent cannot drop it by accident, explain the 0.7.0 ramping rise first, and get live ramping below the baseline without giving back cost, emissions, comfort or the peaks against 0.6.0 live.
 
