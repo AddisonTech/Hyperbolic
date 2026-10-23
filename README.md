@@ -6,7 +6,7 @@ An AI supervisor that runs a simulated district and tries to beat the no-control
 
 Hyperbolic runs [CityLearn](https://github.com/citylearn-project/CityLearn), an open source district energy simulator, entirely on one machine. Every simulated hour it reads CityLearn's observations, forecasts and prices for all buildings, asks a language model for one action per device, passes the answer through a deterministic safety envelope, and applies what survives. Both the agent and the reference are scored by CityLearn's own KPI evaluation, so the numbers come from the benchmark, not from this project.
 
-Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.9.0 Haiku run (see [Version 0.9.0](#version-090)). It replaces the 0.8.0 live run there; the 0.7.0 live run scored worse and was never published (see [Version 0.7.0](#version-070)).
+Replay viewer and scorecard: `docs/index.html`, published with GitHub Pages. Both sides shown there are real CityLearn runs: the no-control baseline and the live 0.10.0 Haiku run on the phase 2 month (see [Version 0.10.0](#version-0100)). It replaces the 0.9.0 live run there; the phase 2 month stays the published one so the page stays comparable with earlier releases. The 0.7.0 live run scored worse and was never published (see [Version 0.7.0](#version-070)).
 
 To watch a run live on your own machine instead, see [Watch it live](#watch-it-live).
 
@@ -426,7 +426,7 @@ On the tuning months (mean of three) the v7 scripted strategy scores cost 0.9086
 
 ### Version 0.10.0
 
-**Goal:** find and close the gap between the 0.9.0 live agent (cost 0.9245, discomfort 0.0940) and the strategy it is given (scripted v7: 0.9016 and 0.0430), fix the hot-side comfort miss, and score everything on more than one month. The envelope is identical to 0.9.0. No live model calls were made for this release: everything here is measured on recorded runs and offline controllers, and the live months are still to run.
+**Goal:** find and close the gap between the 0.9.0 live agent (cost 0.9245, discomfort 0.0940) and the strategy it is given (scripted v7: 0.9016 and 0.0430), fix the hot-side comfort miss, and score everything on more than one month. The envelope is identical to 0.9.0. The analysis, the strategy and the estimates below were built from recorded runs and offline controllers before any live call; the live months on all four months of the set follow them.
 
 **Where the live agent left its strategy.** `scripts/analyze_deviations.py` compares every hour, building and device of the 0.9.0 live month with what the scripted version 7 strategy sends for the very observation the model saw (within 0.002 for cooling, 0.005 for storage), sorts each departure into one class, and then replays the month's own replies through the unchanged envelope with one class at a time put back to the strategy's action. The control replay reproduces the published KPIs exactly. Shares are of the control to strategy gap; the classes interact, so they need not add up.
 
@@ -493,9 +493,76 @@ On the tuning months (mean of three) the v7 scripted strategy scores cost 0.9086
 | Scripted v8 | 0.9031 | 0.9447 | 0.0374 (0.0258, 0.0116) | 0.9983 | 0.9095 | 0.9588 | 22 |
 
 - If Haiku sends `strategy.cooling` as it sent `strategy_battery`, a live v8 month should land near the scripted v8 strategy: cost about 0.903, discomfort about 0.037 and too warm below the baseline. If it starts the trims but keeps its own deeper ones, cost could go lower (toward 0.892) with more ramping and the hot-side miss back. Following the strategy's cooling gives back the all-time peak the live agent's own cooling choices had won (0.9588 against 0.9412).
-- **Only live runs can show** whether Haiku sends the strategy's cooling numbers as given, whether it keeps its battery discipline with the new wording, how far it goes its own way on trims, and how the rooms then evolve; and on the tuning months, how a live agent compares at all, since none has run there.
+- **Only live runs can show** whether Haiku sends the strategy's cooling numbers as given, whether it keeps its battery discipline with the new wording, how far it goes its own way on trims, and how the rooms then evolve; and on the tuning months, how a live agent compares at all, since none had run there before this release.
 
 **Request size and cost.** A version 8 request averages 9,456 characters against 10,748 for version 7 over the same scripted month, 12.0 percent smaller: the system prompt is 3,645 characters against 4,780, the observation 153 shorter, and the reply schema unchanged. Scaled from the 0.9.0 live month (5,185 input and 245 output tokens per call, $0.4607), a Haiku month should cost about $0.42 ($0.4159 at the same reply length, $0.4379 if replies run 25 percent longer). The hard worst case is $0.95 for 719 hours and $0.98 for 743 hours, under the $2.00 cap. Live Haiku months on all four months of the set (2,924 hours) should cost about $1.69 to $1.78 in all, each month under its own $2.00 cap.
+
+**Live results.** Four live runs (`claude-haiku-5-5`, prompt version 8, $2.00 budget each): the phase 2 month (run 20261023T160151Z, 719 hours) and tuning June (20261023T160150Z, 719 hours), July (20261023T160200Z, 743 hours) and August (20261023T160206Z, 743 hours), each scored by `hyperbolic months --run` against the baseline, the 0.4.0 rule-based controller (run 20261022T162847Z on the phase 2 month) and the scripted v8 strategy on the same month:
+
+| CityLearn KPI (district) | | phase 2 | tuning June | tuning July | tuning August | mean |
+|---|---|---|---|---|---|---|
+| cost_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 0.9611 | 0.9506 | 0.9676 | 0.9682 | 0.9619 |
+| | v8 scripted | 0.9031 | 0.9099 | 0.9193 | 0.9023 | 0.9087 |
+| | **Haiku v8** | **0.9045** | **0.9147** | **0.9228** | **0.9070** | **0.9122** |
+| carbon_emissions_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 0.9947 | 1.0001 | 1.0038 | 1.0024 | 1.0002 |
+| | v8 scripted | 0.9447 | 0.9654 | 0.9703 | 0.9524 | 0.9582 |
+| | **Haiku v8** | **0.9453** | **0.9691** | **0.9731** | **0.9559** | **0.9609** |
+| electricity_consumption_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 1.0073 | 1.0065 | 1.0060 | 1.0071 | 1.0067 |
+| | v8 scripted | 0.9540 | 0.9699 | 0.9717 | 0.9549 | 0.9626 |
+| | **Haiku v8** | **0.9547** | **0.9733** | **0.9744** | **0.9583** | **0.9652** |
+| discomfort_proportion | baseline | 0.1714 | 0.1128 | 0.0645 | 0.1919 | 0.1352 |
+| | 0.4.0 rule-based | 0.1714 | 0.1128 | 0.0645 | 0.1919 | 0.1352 |
+| | v8 scripted | 0.0374 | 0.0174 | 0.0073 | 0.0210 | 0.0208 |
+| | **Haiku v8** | **0.0394** | **0.0207** | **0.0114** | **0.0251** | **0.0241** |
+| too cool (discomfort_cold_proportion) | baseline | 0.1538 | 0.0602 | 0.0614 | 0.1902 | 0.1164 |
+| | 0.4.0 rule-based | 0.1538 | 0.0602 | 0.0614 | 0.1902 | 0.1164 |
+| | v8 scripted | 0.0258 | 0.0069 | 0.0057 | 0.0210 | 0.0149 |
+| | **Haiku v8** | **0.0266** | **0.0088** | **0.0098** | **0.0251** | **0.0176** |
+| too warm (discomfort_hot_proportion) | baseline | 0.0176 | 0.0526 | 0.0031 | 0.0017 | 0.0188 |
+| | 0.4.0 rule-based | 0.0176 | 0.0526 | 0.0031 | 0.0017 | 0.0188 |
+| | v8 scripted | 0.0116 | 0.0104 | 0.0016 | 0.0000 | 0.0059 |
+| | **Haiku v8** | **0.0128** | **0.0118** | **0.0016** | **0.0000** | **0.0066** |
+| ramping_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 1.1309 | 1.0742 | 1.0922 | 1.0848 | 1.0955 |
+| | v8 scripted | 0.9983 | 0.9732 | 0.9677 | 1.0100 | 0.9873 |
+| | **Haiku v8** | **0.9969** | **0.9802** | **0.9744** | **1.0157** | **0.9918** |
+| daily_peak_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 0.9978 | 0.9934 | 0.9743 | 0.9734 | 0.9847 |
+| | v8 scripted | 0.9095 | 0.8830 | 0.8854 | 0.8861 | 0.8910 |
+| | **Haiku v8** | **0.9074** | **0.8919** | **0.8943** | **0.8896** | **0.8958** |
+| all_time_peak_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 1.0000 | 1.0000 | 1.0000 | 0.9383 | 0.9846 |
+| | v8 scripted | 0.9588 | 0.8541 | 0.8491 | 0.8570 | 0.8797 |
+| | **Haiku v8** | **0.9590** | **0.8549** | **0.8822** | **0.8940** | **0.8975** |
+| daily_one_minus_load_factor_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | 0.4.0 rule-based | 0.9913 | 0.9834 | 0.9791 | 0.9867 | 0.9851 |
+| | v8 scripted | 0.9639 | 0.9490 | 0.9520 | 0.9546 | 0.9549 |
+| | **Haiku v8** | **0.9616** | **0.9534** | **0.9564** | **0.9514** | **0.9557** |
+| power_outage_normalized_unserved_energy_total | baseline | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| | 0.4.0 rule-based | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| | v8 scripted | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| | **Haiku v8** | **0.6844** | **0.0000** | **0.0000** | **0.0000** | **0.1711** |
+| Clamped hours | baseline | 0 | 0 | 0 | 0 | 0.0 |
+| | 0.4.0 rule-based | 1 | 1 | 0 | 0 | 0.5 |
+| | v8 scripted | 22 | 32 | 10 | 3 | 16.8 |
+| | **Haiku v8** | **33** | **39** | **14** | **17** | **25.8** |
+| Model cost | **Haiku v8** | **$0.4182** | **$0.4118** | **$0.4229** | **$0.4288** | **$0.4204** |
+
+Thermal resilience is scored only where there are outages: on the phase 2 month all four controllers tie at 0.3698.
+
+- **Haiku v8 beats the 0.4.0 rule-based controller on every KPI in every one of the four months**, with unserved energy in outages tied. In 0.9.0 the live agent trailed it on hot-side discomfort.
+- **Too-warm discomfort is now below the baseline in every month** (0.0128 against 0.0176 on phase 2, 0.0118 against 0.0526 in June, 0.0016 against 0.0031 in July, 0.0000 against 0.0017 in August). The v7 strategy was above the baseline in every month.
+- **On the phase 2 month against 0.9.0 live:** cost 0.9045 against 0.9245, discomfort 0.0394 against 0.0940, too warm 0.0128 against 0.0181, ramping 0.9969 against 0.9864, clamped hours 33 against 27. It gives back a little ramping and a few clamped hours for a large gain in cost and comfort.
+- **It is the best live run so far on cost, emissions, grid import, discomfort, too warm and the daily peak** (phase 2: 0.9045, 0.9453, 0.9547, 0.0394, 0.0128 and 0.9074, against 0.8.0 live's 0.9190 and 0.9610, 0.7.0 live's 0.9684 and 0.0741, 0.8.0 live's 0.0168 and 0.9.0 live's 0.9182). It is not the best on the all-time peak (0.9.0 live: 0.9412), ramping (0.9.0 live: 0.9864) or load factor (0.4.0 live: 0.9559).
+- **The agent now follows its strategy closely.** Haiku runs within about 0.004 of the v8 scripted strategy on mean cost (0.9122 against 0.9087; 0.0013 to 0.0048 by month), where 0.9.0 live sat 0.0229 above the v7 strategy on the phase 2 month.
+- **The one KPI over the baseline is August ramping** (1.0157), where the v8 scripted strategy is also over (1.0100). It is a strategy limit, not an agent deviation.
+- **Phase 2 is no longer a clean holdout.** The outage exception in the warm-room cooling and the selection rule were set after looking at the phase 2 month, so the three tuning months are the cleaner evidence. They tell the same story: below the rule-based controller on every KPI and within 0.005 of the scripted strategy on cost.
+- 0 fallbacks in all four months. The four runs cost $1.6817 in all ($0.4204 a month on average, against the $0.42 estimate), each well under its $2.00 budget, and each replays every hour identically with 0 API calls (719, 719, 743 and 743 of their hours).
+
+**The published viewer now shows the 0.10.0 phase 2 live run** in place of 0.9.0 (the page's headline: cost down 9.6 percent, emissions down 5.5 percent at equal or better comfort). The phase 2 month stays the published one so the page stays comparable with earlier releases.
 
 ## What the agent sees
 
@@ -590,7 +657,7 @@ The baseline action under active control is storage idle and the heat pump at th
 - Key from `HYPERBOLIC_ANTHROPIC_KEY`, falling back to `TRIAGE_ANTHROPIC_KEY`. The key lives only in the environment, never in a file, log or run folder (a test checks this).
 - Model: `--model haiku` (default, `claude-haiku-5-5`) or `--model sonnet` (`claude-sonnet-5-5`). Structured JSON output, low effort, 2000 max tokens.
 - Hard budget per run, `--budget` (default 2.00 USD). Before every call the runner computes that call's worst case (prompt size plus full max tokens). If it could push spending past the budget, model calls stop for the rest of the run and every remaining hour uses the baseline action.
-- Episode length: the full 719 hours. The 0.2.0 live run averaged about 4,700 characters per request and cost 0.23 USD on Haiku. Prompt version 2 adds the 24 hour outlook and the strategy, about 7,400 characters per request, and the 0.3.0 live Haiku month cost 0.39 USD. Prompt version 3 is about 8,600 characters per request; the 0.4.0 live Haiku month cost 0.47 USD, against a hard worst case of about 0.93 USD. Prompt version 4 adds the reference action, the price plan and the battery limits, about 9,650 characters per request: the 0.6.0 live Haiku month cost 0.57 USD, against a hard worst case of about 0.95 USD. Prompt version 5 adds the smoothing view, about 10,430 characters per request: the 0.7.0 live Haiku month cost 0.63 USD, against a hard worst case of about 0.97 USD and the default 2.00 USD budget. Prompt version 6 adds the trim hold and `end_trim`, about 10,930 characters per request (4.8 percent more): the 0.8.0 live Haiku month cost 0.53 USD (5,245 input and 429 output tokens per call), against a hard worst case of about 0.99 USD. Prompt version 7 shows the envelope's ranges and is 1.7 percent smaller, about 10,750 characters: the 0.9.0 live Haiku month cost 0.46 USD (5,185 input and 245 output tokens per call). Prompt version 8 shows the strategy's whole action and is 12.0 percent smaller again, about 9,460 characters: a Haiku month should cost about 0.42 USD, against a hard worst case of about 0.95 USD (0.98 USD for a 743 hour tuning month). Sonnet costs 20 times as much per token: a full Sonnet month should cost roughly 11 to 13 USD, so under a 2.00 USD budget it stops calling the model after about a sixth of the month and the remaining hours use the baseline action. Raise `--budget` (about 14 USD) for a full Sonnet run. Each run logs its exact token cost in `result.json`.
+- Episode length: the full 719 hours. The 0.2.0 live run averaged about 4,700 characters per request and cost 0.23 USD on Haiku. Prompt version 2 adds the 24 hour outlook and the strategy, about 7,400 characters per request, and the 0.3.0 live Haiku month cost 0.39 USD. Prompt version 3 is about 8,600 characters per request; the 0.4.0 live Haiku month cost 0.47 USD, against a hard worst case of about 0.93 USD. Prompt version 4 adds the reference action, the price plan and the battery limits, about 9,650 characters per request: the 0.6.0 live Haiku month cost 0.57 USD, against a hard worst case of about 0.95 USD. Prompt version 5 adds the smoothing view, about 10,430 characters per request: the 0.7.0 live Haiku month cost 0.63 USD, against a hard worst case of about 0.97 USD and the default 2.00 USD budget. Prompt version 6 adds the trim hold and `end_trim`, about 10,930 characters per request (4.8 percent more): the 0.8.0 live Haiku month cost 0.53 USD (5,245 input and 429 output tokens per call), against a hard worst case of about 0.99 USD. Prompt version 7 shows the envelope's ranges and is 1.7 percent smaller, about 10,750 characters: the 0.9.0 live Haiku month cost 0.46 USD (5,185 input and 245 output tokens per call). Prompt version 8 shows the strategy's whole action and is 12.0 percent smaller again, about 9,460 characters: the 0.10.0 live Haiku months cost 0.41 to 0.43 USD, against a hard worst case of about 0.95 USD (0.98 USD for a 743 hour tuning month). Sonnet costs 20 times as much per token: a full Sonnet month should cost roughly 11 to 13 USD, so under a 2.00 USD budget it stops calling the model after about a sixth of the month and the remaining hours use the baseline action. Raise `--budget` (about 14 USD) for a full Sonnet run. Each run logs its exact token cost in `result.json`.
 
 ## How to run it
 
@@ -674,13 +741,14 @@ CI (GitHub Actions) runs the tests on Python 3.10 and 3.12 with CPU-only torch, 
 ## Honest limits
 
 - **Simulator only.** CityLearn models buildings with data-driven load profiles and an LSTM for indoor temperature. Beating its reference is evidence worth investigating, not proof of field savings.
-- **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. In 0.6.0 it beat it on every one of those. In 0.8.0 it beat it on every KPI except unserved energy in outages, by 0.0006. In 0.9.0 it beat or tied it on every KPI except hot-side discomfort, by 0.0005. From 0.6.0 the rule-based check is frozen at its 0.4.0 settings so the bar does not move.
+- **The rule-based check is not a model result.** It shows the action path can beat the reference and sets the bar for the agent. In 0.3.0 the live agent beat the baseline on cost only and did not beat the rule-based check. In 0.4.0 it beat the rule-based check on daily peak, ramping and load factor but not on cost or emissions. In 0.6.0 it beat it on every one of those. In 0.8.0 it beat it on every KPI except unserved energy in outages, by 0.0006. In 0.9.0 it beat or tied it on every KPI except hot-side discomfort, by 0.0005. In 0.10.0 it beat it on every KPI in every one of the four months of the month set, with unserved energy in outages tied. From 0.6.0 the rule-based check is frozen at its 0.4.0 settings so the bar does not move.
 - **The scripted version 4 and 5 strategies are not model results either.** They show that the strategy the agent is given beats the rule-based controller when followed literally. A live model reads the same strategy and may follow it more or less closely.
 - **The peak limiter uses this hour's load.** It reads the draw CityLearn is about to simulate for this hour (plug load, solar, hot water demand, cooling), the equivalent of a meter reading in a real building. The forecast of the day's peak is built only from past days. The agent itself sees only the same values the limiter uses, never the rest of the day.
 - **Ramping is a sum of rises, against CityLearn's own reference.** Smoothing that only spreads a rise over more hours does not lower it, which is why the trims are held rather than tapered. The denominator is built inside each run, so an agent's actions in an outage hour can move it (see [Version 0.8.0](#version-080)). The remaining up-ramp is mostly the baseline's own evening rise and the end of the top-price discharge.
 - **The live agent does not carry a plan from hour to hour.** Each hour is a separate call. In 0.7.0 it was asked to hold cooling trims across hours and broke that in 142 of 237 trim ends (the scripted strategy: 4 of 167). From 0.8.0 the envelope holds them in code, and in the 0.8.0 live month it clamped the agent's cooling 345 times in 292 of 719 hours, 250 of them on `null` replies the prompt said would keep the trim. Version 7 shows the allowed range instead. In the 0.9.0 live month the agent sent `strategy_battery` in 2,150 of 2,157 building-hours but started almost none of the trims the strategy calls for, so version 8 shows the cooling as a number too. Its battery use is still the agent's own: in 0.7.0 that, not the trims, is what raised ramping above 0.6.0.
 - **The 0.8.0 estimates were not live results.** The 0.7.0 replies sent through the 0.8.0 rules are fixed, so they cannot react to what the hold changed, and they do not include the version 6 prompt. The live month came in lower on ramping than that estimate (1.0076 against 1.0249); this release does not split how much of that is the hold and how much the prompt.
-- **The 0.10.0 estimates are not live results.** They fill the version 8 strategy into the 0.9.0 live replies, which were written for the version 7 prompt and cannot react to what changed. The month set's scripted columns are not model results either, and no live run has been made on a tuning month yet.
+- **The 0.10.0 estimates are not live results.** They fill the version 8 strategy into the 0.9.0 live replies, which were written for the version 7 prompt and cannot react to what changed. The month set's scripted columns are not model results either. The live months that followed came in close to the scripted v8 strategy (mean cost 0.9122 against 0.9087).
+- **The phase 2 month is no longer a clean holdout.** The warm-room cooling's outage exception and the selection rule were set after looking at it, so from 0.10.0 the three tuning months are the cleaner evidence.
 - **The warm-room cooling rests on CityLearn's LSTM.** It answers a mechanism seen in the simulator: a trimmed room loses the baseline's cushion and a hot morning or an outage carries it over the band. On the tuning months it removed 80 percent of the strategy's too-warm hours for about 0.002 of cost.
 - **The 0.9.0 estimates are not live results.** They fit the 0.8.0 live replies into the version 7 ranges and, in one column, swap in `strategy_battery`. They assume a model that obeys the ranges and the battery plan, and fixed replies cannot react to what changed. Whether Haiku does that under the version 7 wording can only be measured live.
 - **Tuned on one other dataset.** From 0.6.0 the strategy's numbers come from three summer months of the CityLearn 2023 online evaluation set: other weather, loads, carbon and tariff, but the same three buildings and LSTM models, so it says nothing about other building types. The 0.4.0 rule-based controller still carries settings chosen on the first week of the reported month.

@@ -2,7 +2,7 @@
 
 ## 0.10.0 (2026-10-23)
 
-Goal: find and close the gap between the 0.9.0 live agent and its own strategy, fix the hot-side comfort miss, and score everything on more than one month. The envelope does not change. No live model calls were made for this release.
+Goal: find and close the gap between the 0.9.0 live agent and its own strategy, fix the hot-side comfort miss, and score everything on more than one month. The envelope does not change. The analysis, strategy and estimates below were built before any live call; the live months on all four months of the set follow them.
 
 Where the 0.9.0 live month (`runs/live/...20261023T135430Z`, cost 0.9245, discomfort 0.0940) left the scripted version 7 strategy (0.9016, 0.0430), from `scripts/analyze_deviations.py`: every hour, building and device against what `strategy_plan_v7` sends for the same observation, then the month's own replies replayed through the unchanged envelope with one class at a time put back to the strategy (the control replay reproduces the published KPIs exactly; shares are of the control to strategy gap):
 
@@ -63,6 +63,72 @@ Every month, offline (scripted columns are not model results):
 Estimates for a live v8 month (the 0.9.0 live replies with the version 8 strategy filled in): trims started where the agent skipped them and nothing else changed: cost 0.8920, emissions 0.9337, discomfort 0.0417, too warm 0.0181, ramping 1.0051, 68 clamped hours; every hour's cooling from `strategy` with the agent's own battery: 0.9031, 0.9447, 0.0374, 0.0116, 0.9977, all-time peak 0.9588 (0.9412 live), 22 clamped hours; scripted v8: 0.9031, 0.9447, 0.0374, 0.0116, 0.9983. Only live runs can show whether Haiku sends the strategy's cooling as given, keeps its battery discipline under the new wording, and how the rooms then evolve, and how any live agent does on the tuning months.
 
 Request size and cost: a version 8 request averages 9,456 characters against 10,748 for version 7 over the same scripted month, 12.0 percent smaller (system prompt 3,645 against 4,780 characters, observation 153 shorter, reply schema unchanged). Scaled from the 0.9.0 live month (5,185 input and 245 output tokens per call, $0.4607), a Haiku month should cost about $0.42 ($0.4159 at the same reply length, $0.4379 if replies run 25 percent longer); the hard worst case is $0.95 for 719 hours and $0.98 for 743. Live Haiku months on all four months (2,924 hours) should cost about $1.69 to $1.78 in all, each under its own $2.00 cap.
+
+Live runs (`claude-haiku-5-5`, prompt version 8, $2.00 budget each): phase 2 (run 20261023T160151Z, 719 hours), June (20261023T160150Z, 719), July (20261023T160200Z, 743) and August (20261023T160206Z, 743), scored with `hyperbolic months --run` against the baseline, the 0.4.0 rule-based controller (run 20261022T162847Z on phase 2) and scripted v8 on the same month:
+
+| KPI | | phase 2 | June | July | August | mean |
+|---|---|---|---|---|---|---|
+| cost_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 0.9611 | 0.9506 | 0.9676 | 0.9682 | 0.9619 |
+| | v8 scripted | 0.9031 | 0.9099 | 0.9193 | 0.9023 | 0.9087 |
+| | Haiku v8 | 0.9045 | 0.9147 | 0.9228 | 0.9070 | 0.9122 |
+| carbon_emissions_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 0.9947 | 1.0001 | 1.0038 | 1.0024 | 1.0002 |
+| | v8 scripted | 0.9447 | 0.9654 | 0.9703 | 0.9524 | 0.9582 |
+| | Haiku v8 | 0.9453 | 0.9691 | 0.9731 | 0.9559 | 0.9609 |
+| electricity_consumption_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 1.0073 | 1.0065 | 1.0060 | 1.0071 | 1.0067 |
+| | v8 scripted | 0.9540 | 0.9699 | 0.9717 | 0.9549 | 0.9626 |
+| | Haiku v8 | 0.9547 | 0.9733 | 0.9744 | 0.9583 | 0.9652 |
+| discomfort_proportion | baseline | 0.1714 | 0.1128 | 0.0645 | 0.1919 | 0.1352 |
+| | rule 0.4.0 | 0.1714 | 0.1128 | 0.0645 | 0.1919 | 0.1352 |
+| | v8 scripted | 0.0374 | 0.0174 | 0.0073 | 0.0210 | 0.0208 |
+| | Haiku v8 | 0.0394 | 0.0207 | 0.0114 | 0.0251 | 0.0241 |
+| too cool | baseline | 0.1538 | 0.0602 | 0.0614 | 0.1902 | 0.1164 |
+| | rule 0.4.0 | 0.1538 | 0.0602 | 0.0614 | 0.1902 | 0.1164 |
+| | v8 scripted | 0.0258 | 0.0069 | 0.0057 | 0.0210 | 0.0149 |
+| | Haiku v8 | 0.0266 | 0.0088 | 0.0098 | 0.0251 | 0.0176 |
+| too warm | baseline | 0.0176 | 0.0526 | 0.0031 | 0.0017 | 0.0188 |
+| | rule 0.4.0 | 0.0176 | 0.0526 | 0.0031 | 0.0017 | 0.0188 |
+| | v8 scripted | 0.0116 | 0.0104 | 0.0016 | 0.0000 | 0.0059 |
+| | Haiku v8 | 0.0128 | 0.0118 | 0.0016 | 0.0000 | 0.0066 |
+| ramping_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 1.1309 | 1.0742 | 1.0922 | 1.0848 | 1.0955 |
+| | v8 scripted | 0.9983 | 0.9732 | 0.9677 | 1.0100 | 0.9873 |
+| | Haiku v8 | 0.9969 | 0.9802 | 0.9744 | 1.0157 | 0.9918 |
+| daily_peak_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 0.9978 | 0.9934 | 0.9743 | 0.9734 | 0.9847 |
+| | v8 scripted | 0.9095 | 0.8830 | 0.8854 | 0.8861 | 0.8910 |
+| | Haiku v8 | 0.9074 | 0.8919 | 0.8943 | 0.8896 | 0.8958 |
+| all_time_peak_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 1.0000 | 1.0000 | 1.0000 | 0.9383 | 0.9846 |
+| | v8 scripted | 0.9588 | 0.8541 | 0.8491 | 0.8570 | 0.8797 |
+| | Haiku v8 | 0.9590 | 0.8549 | 0.8822 | 0.8940 | 0.8975 |
+| daily_one_minus_load_factor_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| | rule 0.4.0 | 0.9913 | 0.9834 | 0.9791 | 0.9867 | 0.9851 |
+| | v8 scripted | 0.9639 | 0.9490 | 0.9520 | 0.9546 | 0.9549 |
+| | Haiku v8 | 0.9616 | 0.9534 | 0.9564 | 0.9514 | 0.9557 |
+| unserved energy in outages | baseline | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| | rule 0.4.0 | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| | v8 scripted | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| | Haiku v8 | 0.6844 | 0.0000 | 0.0000 | 0.0000 | 0.1711 |
+| clamped hours | baseline | 0 | 0 | 0 | 0 | 0.0 |
+| | rule 0.4.0 | 1 | 1 | 0 | 0 | 0.5 |
+| | v8 scripted | 22 | 32 | 10 | 3 | 16.8 |
+| | Haiku v8 | 33 | 39 | 14 | 17 | 25.8 |
+| model cost | Haiku v8 | $0.4182 | $0.4118 | $0.4229 | $0.4288 | $0.4204 |
+
+Thermal resilience is scored only on phase 2, where all four controllers tie at 0.3698.
+
+- **Haiku v8 beats the 0.4.0 rule-based controller on every KPI in every one of the four months**, with unserved energy in outages tied (0.9.0 live trailed it on hot-side discomfort).
+- **Too-warm discomfort is now below the baseline in every month**; the v7 strategy was above it in every month.
+- **Phase 2 against 0.9.0 live:** cost 0.9045 against 0.9245, discomfort 0.0394 against 0.0940, too warm 0.0128 against 0.0181, ramping 0.9969 against 0.9864, clamped hours 33 against 27.
+- **The best live run so far on cost, emissions, grid import, discomfort, too warm and the daily peak** (phase 2). Not on the all-time peak (0.9.0 live: 0.9412), ramping (0.9.0 live: 0.9864) or load factor (0.4.0 live: 0.9559).
+- **The agent now follows its strategy closely:** Haiku runs within about 0.004 of the v8 scripted strategy on mean cost (0.9122 against 0.9087; 0.0013 to 0.0048 by month).
+- **The one KPI over the baseline is August ramping** (1.0157), where the v8 scripted strategy is also over (1.0100): a strategy limit, not an agent deviation.
+- **Phase 2 is no longer a clean holdout**, because the outage exception and the selection rule were set after looking at it; the three tuning months are the cleaner evidence.
+- 2,924 calls, 0 fallbacks, $1.6817 in all ($0.4182, $0.4118, $0.4229, $0.4288), and every run replays all its hours identically with 0 API calls.
+- The published viewer (`docs/data`) now shows the 0.10.0 phase 2 live run in place of 0.9.0 (cost down 9.6 percent, emissions down 5.5 percent). Phase 2 stays the published month so the viewer stays comparable with earlier releases.
 
 ## 0.9.0 (2026-10-23)
 
