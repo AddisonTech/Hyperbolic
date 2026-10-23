@@ -27,11 +27,19 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      replaced by the version 5 strategy's own battery action per building
      (strategy_battery, with strategy_battery_reason), and each building shows the trim the
      envelope will keep this hour (cooling_trim_held).
+  7  v0.9.0. Each building shows what the envelope allows this hour, so a reply can fit it:
+     the trim (depth, hold state and why, the least depth it may run, whether end_trim may
+     be used), cooling_range and battery_range, and last hour's clamps on that building
+     with their reasons (in place of the district-wide last_clamps). null is described as
+     exactly the baseline, so a held trim is sent as a number. strategy_battery comes from
+     battery_plan_v7, version 5's plan with the shipped numbers, and a model that differs
+     from it is asked to stay close. The envelope's rules are the same as for version 6.
 """
 
 from __future__ import annotations
 
 import json
+import math
 
 from . import district as dc
 from .envelope import Decision, Envelope, EnvelopeConfig, StepContext, proposal_json_schema
@@ -41,14 +49,16 @@ from .model import (
     MODELS,
     StrategyParams,
     StrategyParamsV5,
+    StrategyParamsV7,
     battery_plan_v5,
+    battery_plan_v7,
     rule_plan_v3,
 )
 from .signals import charge_spread, combined_signal
 
 
-PROMPT_VERSION = 6
-PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6)
+PROMPT_VERSION = 7
+PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
 # From this version the reply may end a held cooling trim early (envelope trim hold, 0.8.0).
 END_TRIM_FROM = 6
 
@@ -722,6 +732,189 @@ Reply with one JSON object only, matching the schema. "reason" is one plain sent
 reply invalid."""
 
 
+def _inward(lo: float, hi: float) -> list[float] | None:
+    """[lo, hi] rounded inward to 4 decimals, the precision the envelope applies; None when no
+    4 decimal value fits (only the exact baseline does)."""
+    a, b = math.ceil(lo * 1e4 - 1e-6) / 1e4, math.floor(hi * 1e4 + 1e-6) / 1e4
+    return None if a > b else [a, b]
+
+
+def cooling_range(envelope: Envelope, b: str, st) -> list[float] | None:
+    """The cooling values the envelope lets through for building b this hour without a clamp,
+    worked out read only from its own state, in its own order: range, rate, deviation, the
+    unoccupied overcool guard, comfort, then the trim hold. None means only the exact
+    baseline_action passes (null). A held trim keeps cooling at least need below the baseline,
+    exactly what the hold would apply; where that reaches below the action range the hold
+    applies the bottom of the range and still logs a clamp, which no reply can avoid."""
+    cfg = envelope.config
+    base = st.baseline["cooling"]
+    blo, bhi = st.bounds["cooling"]
+    lo, hi = max(cfg.cooling_min, blo), min(cfg.cooling_max, bhi)
+    floor = lo
+    prev = envelope.memory.get(f"{b}.cooling", base)
+    lo, hi = max(lo, min(prev, base) - cfg.cooling_rate_per_step), min(hi, max(prev, base) + cfg.cooling_rate_per_step)
+    if cfg.cooling_max_deviation is not None:
+        lo, hi = max(lo, base - cfg.cooling_max_deviation), min(hi, base + cfg.cooling_max_deviation)
+    band, margin = cfg.comfort_band_k, cfg.comfort_margin_k
+    if not st.occupied and cfg.overcool_guard_unoccupied and st.indoor_c <= st.setpoint_c - band + margin:
+        hi = min(hi, base)
+    if st.occupied:
+        if st.indoor_c >= st.setpoint_c + band - margin:
+            lo = max(lo, base)
+        elif st.indoor_c <= st.setpoint_c - band + margin:
+            hi = min(hi, base)
+    if cfg.trim_hold:
+        need, kind, _ = envelope.held_trim(b, st)
+        if kind == "end":
+            lo = max(lo, base)
+        elif envelope.holds.get(b, 0.0) > cfg.trim_min_depth:
+            # Where the hold reaches below the action range it holds cooling at the bottom of it.
+            hi = max(min(hi, base - need), max(floor, base - need))
+            lo = min(lo, hi)
+            got = _inward(lo, hi)
+            return got if got is not None else [math.ceil(lo * 1e4 - 1e-6) / 1e4] * 2
+    return _inward(lo, hi)
+
+
+def battery_range(envelope: Envelope, b: str, st) -> list[float]:
+    """The battery values the envelope lets through for building b without a range, rate or
+    state of charge clamp. The spread check and the peak limiter are shown separately
+    (grid_charging_ok, peak.headroom_kwh)."""
+    cfg = envelope.config
+    blo, bhi = st.bounds["battery"]
+    lo, hi = max(cfg.storage_min, blo), min(cfg.storage_max, bhi)
+    prev = envelope.memory.get(f"{b}.battery", 0.0)
+    lo, hi = max(lo, min(prev, 0.0) - cfg.battery_rate_per_step), min(hi, max(prev, 0.0) + cfg.battery_rate_per_step)
+    lo, hi = max(lo, min(0.0, cfg.soc_min - st.battery_soc)), min(hi, max(0.0, cfg.soc_max - st.battery_soc))
+    return _inward(lo, hi) or [0.0, 0.0]
+
+
+_TRIM_WHY = {"the baseline has no cooling to trim": "no baseline cooling", "the room is unoccupied": "unoccupied"}
+
+
+def trim_view(envelope: Envelope, b: str, st) -> dict:
+    """Building b's cooling trim as the envelope will treat it this hour. state: off (no trim on),
+    hold (more than trim_hold_c below the setpoint: keep at least depth), ease (within
+    trim_hold_c: ease off by at most trim_release_step), end (no trim may run now)."""
+    cfg = envelope.config
+    depth = envelope.holds.get(b, 0.0) if cfg.trim_hold else 0.0
+    on = depth > cfg.trim_min_depth
+    need, kind, why = envelope.held_trim(b, st) if cfg.trim_hold else (0.0, "none", "")
+    out: dict = {"depth": _r(depth, 3) if on else 0.0, "state": "off" if kind == "none" else kind,
+                 "end_trim_ok": bool(on and kind in ("hold", "ease"))}
+    if kind == "hold":
+        out["why"] = f"{st.setpoint_c - st.indoor_c:.1f} C below setpoint"
+    elif kind == "ease":
+        out["why"] = f"within {cfg.trim_hold_c:g} C of setpoint"
+    elif kind == "end":
+        out["why"] = _TRIM_WHY.get(why, "at or above setpoint")
+    if kind in ("hold", "ease") and on:
+        out["min_depth"] = _r(need, 3)
+    return out
+
+
+def build_observation_v7(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
+                         envelope: Envelope | None) -> dict:
+    """Version 7: version 6 with what the envelope allows each building this hour (the trim,
+    cooling_range, battery_range, last hour's clamps there) and the version 7 battery plan."""
+    envelope = envelope or Envelope(EnvelopeConfig())
+    obs = build_observation_v5(state, ctx, last, look, envelope)
+    del obs["reference_reason"], obs["last_clamps"]
+    for b in obs["buildings"]:
+        del obs["buildings"][b]["reference_action"], obs["buildings"][b]["cooling_trim_last_hour"]
+    battery, why = battery_plan_v7(obs)
+    obs["strategy_battery_reason"] = why
+    for b, st in ctx.buildings.items():
+        ob = obs["buildings"][b]
+        ob["trim"] = trim_view(envelope, b, st)
+        ob["cooling_range"] = cooling_range(envelope, b, st)
+        ob["battery_range"] = br = battery_range(envelope, b, st)
+        ob["strategy_battery"] = min(max(battery[b], br[0]), br[1])
+        clamps = [] if last is None else [c for c in last.clamps if c.point.startswith(f"{b}.")]
+        if clamps:
+            ob["last_clamp"] = "; ".join(f"{c.point.split('.')[1]} {c.rule} {_r(c.requested, 4)} to "
+                                         f"{_r(c.applied, 4)}: {c.reason}" for c in clamps)
+    return obs
+
+
+def system_prompt_v7(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    peak = ", battery then tank charging above peak.target_kwh" if cfg.peak_limit else ""
+    spread = ", grid charging when grid_charging_ok is false (spare solar may still be stored)" if cfg.spread_check else ""
+    sp = StrategyParamsV7()  # the strategy's numbers, chosen on the tuning dataset
+    full = sp.cold_margin_c + sp.cold_ramp_c
+    fill = (" Grid charging fills the district draw only up to the higher of district_draw_last_hour_kwh and "
+            "district_load_next_hour_kwh." if sp.fill_valley else "")
+    cap = ("" if sp.rise_step >= sp.max_step else
+           f" Raise a battery action (more charge or less discharge) by at most {sp.rise_step:g} per hour; "
+           "lowering it is free.")
+    reserve = ("" if sp.evening_reserve <= 0 else
+               f" Keep {sp.evening_reserve:g} of state of charge back for the evening district peak.")
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings ({dc.DATASET_NAME}, CityLearn). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
+
+Goals, in this order, graded by CityLearn's own KPIs over the month against the no-control reference \
+(storage idle, heat pump meeting the ideal load):
+1. Comfort: no more discomfort than the reference. Discomfort is any occupied hour with indoor \
+temperature outside setpoint +/- {cfg.comfort_band_k:g} C.
+2. Peaks and smoothness: keep the district's daily peak, its daily load factor and its ramping at or \
+better than the reference. Ramping counts every hour the district draws more than the hour before, \
+so a step up costs and a step down does not.
+3. Cost first, then carbon: lower electricity cost and lower emissions than the reference. Each \
+building's cost counts equally, whatever its size.
+
+What you see:
+- cooling_range and battery_range in each building: the values the safety envelope lets through this \
+hour. Stay inside them and nothing is clamped. cooling_range null: only the baseline passes, use null.
+- trim: the cooling trim the envelope carries. depth is how far below baseline_action it runs. state \
+off: none on. hold: the room is more than {cfg.trim_hold_c:g} C below its setpoint, keep at least depth. \
+ease: within {cfg.trim_hold_c:g} C, ease off by at most {cfg.trim_release_step:g} per hour. end: no trim may \
+run now. min_depth is the least trim allowed this hour; end_trim_ok says whether end_trim may be used.
+- last_clamp: what the envelope changed in that building last hour, and why.
+- strategy_battery: the battery action points 2 to 4 below give this hour, worked out in code, with \
+strategy_battery_reason. Use it unless you have a clear reason; say why you differ.
+- price_plan: the price now, the 24 hour top and low, top_price_now, top_price_hours_ahead, flat_24h.
+- battery: soc, soc_floor, usable_kwh, capacity, max_fraction_per_hour, round_trip_min, and \
+grid_charging_ok (false when no price ahead pays back the losses and a cheaper hour is coming).
+- indoor_vs_setpoint_c; smoothing: district_draw_last_hour_kwh (measured), district_load_now_kwh and \
+district_load_next_hour_kwh (before storage, the next hour as yesterday); peak: target_kwh, \
+headroom_kwh, forecast_today_kwh; signal_outlook and next_24h by hour.
+
+Strategy:
+1. Cooling. An occupied room more than {sp.cold_margin_c:g} C below its setpoint is overcooled: cut its \
+cooling below baseline_action, from 0 at {sp.cold_margin_c:g} C below to {sp.cold_trim:g} at {full:g} C or \
+more below. null is exactly baseline_action: use it only when trim state is off or end. When state is \
+hold or ease, send a cooling number inside cooling_range (deeper is fine). End a held trim early only \
+with end_trim and null cooling, when end_trim_ok.
+2. Hold the battery for the top-price hours. When top_price_now is true, discharge the usable charge \
+evenly over the top-price hours left, each hour no more than the building's load_now_kwh (power \
+sent back to the grid earns nothing).{reserve} Do not discharge in cheaper hours before them, except \
+to keep district load down: once district_load_now_kwh reaches {sp.shave:g} x forecast_today_kwh, \
+discharge to cover the building's own load. On flat_24h days leave the battery idle.
+3. Charge so each battery is near {sp.soc_target:g} when the top-price hours start: only when \
+grid_charging_ok is true, in the cheapest hours with the lowest carbon, up to about {sp.charge_rate:g} \
+of capacity per hour, within headroom_kwh. Store spare solar any time.{fill}
+4. No step changes. strategy_battery already spreads charging over several cheap hours and the \
+discharge over the top-price hours; send it as given. If you differ, stay within {sp.battery_band:g} of \
+it and never skip a peak-shaving discharge.{cap} Never charge at the top price. Leave the hot water \
+tank at 0.
+
+Actions per building, use null to keep the baseline action:
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- end_trim: null, or a short reason to end that building's held cooling trim now.
+
+The ranges already apply the envelope's range, rate, state of charge ({cfg.soc_min:g} to \
+{cfg.soc_max:g}), deviation, comfort and trim hold rules. It also clamps the tank by the same rate \
+({cfg.dhw_rate_per_step:g}) and charge limits{spread}{peak}. An invalid reply uses the baseline action \
+everywhere for that hour. Clamps are logged against you.
+
+Reply with one JSON object only, matching the schema. "reason" is one plain sentence of at most \
+{dc.REASON_TARGET_CHARS} characters. A reason over {dc.REASON_MAX_CHARS} characters makes the whole \
+reply invalid."""
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -736,6 +929,8 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v5(state, ctx, last, look, envelope)
     if version == 6:
         return build_observation_v6(state, ctx, last, look, envelope)
+    if version == 7:
+        return build_observation_v7(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
 
@@ -750,7 +945,8 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
                   max_tokens: int = DEFAULT_MAX_TOKENS, effort: str = DEFAULT_EFFORT,
                   prompt_version: int = 1) -> dict:
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
-              4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6}[prompt_version](cfg, buildings)
+              4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6,
+              7: system_prompt_v7}[prompt_version](cfg, buildings)
     return {
         "model": MODELS[model_key]["id"],
         "max_tokens": max_tokens,

@@ -216,8 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--prompt-version", type=int, default=None, choices=PROMPT_VERSIONS,
                    help=f"observation and prompt version (default: {PROMPT_VERSION}; with --scripted, "
                         f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while versions 4 and 5 "
-                        "run their strategies literally and version 6 runs the version 5 strategy with the "
-                        "trim hold)")
+                        "run their strategies literally, version 6 runs the version 5 strategy with the "
+                        "trim hold and version 7 keeps it inside the ranges its observation shows)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")
