@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0 (2026-10-23)
+
+Goal: close the gap between the 0.10.0 live agent and its strategy on the all-time peak (July 0.8822 against scripted v8 0.8491, August 0.8940 against 0.8570) and the daily peak, bring August ramping (1.0157, the one KPI over the baseline) down, and set up a clean holdout that nothing in this release is tuned on. The envelope does not change. No live model calls are made for this release.
+
+**The holdout** (`HOLDOUT.md`), chosen and sealed before any tuning: Buildings 4, 5 and 6 of `citylearn_challenge_2023_phase_3_1`, June, July and August. No dataset CityLearn v3.0.2 ships is both new and fully compatible; this is the closest, new in its buildings but on the tuning months' weather, tariff and carbon. `hyperbolic months` and `compare` refuse it without `--holdout-final`, and only the baseline was run on it.
+
+**Acceptance rule for prompt version 9, written before any v9 result.** On the mean of the four months of the month set (phase 2, tuning June, July and August), each from `hyperbolic months` at CityLearn's six decimals, a v9 scripted candidate passes when, against v8 scripted:
+
+- `all_time_peak_average` is lower and `ramping_average` is lower;
+- `cost_total`, `carbon_emissions_total`, `discomfort_proportion` and `discomfort_hot_proportion` are each no more than 0.001 higher;
+- `power_outage_normalized_unserved_energy_total` is not higher at all.
+
+Among passing candidates the one with the lowest mean all-time peak plus mean ramping ships, ties going to the lower mean cost. If no candidate passes, nothing new ships: v8 stays the default strategy and this entry says so. The holdout plays no part.
+
 ## 0.10.0 (2026-10-23)
 
 Goal: find and close the gap between the 0.9.0 live agent and its own strategy, fix the hot-side comfort miss, and score everything on more than one month. The envelope does not change. The analysis, strategy and estimates below were built before any live call; the live months on all four months of the set follow them.
