@@ -17,7 +17,7 @@ import split_ramping  # noqa: E402
 import tune_strategy  # noqa: E402
 
 from hyperbolic.envelope import Envelope, EnvelopeConfig  # noqa: E402
-from hyperbolic.model import Budget, ScriptedSupervisor, StrategyParamsV7  # noqa: E402
+from hyperbolic.model import Budget, ScriptedSupervisor, StrategyParamsV7, StrategyParamsV8  # noqa: E402
 from hyperbolic.runner import AgentController, RunWriter, run_session  # noqa: E402
 
 
@@ -78,3 +78,18 @@ def test_v7_grid_holds_the_shipped_battery_plan_once():
     shipped = dataclasses.asdict(StrategyParamsV7())
     assert grid.count(shipped) == 1 and len(grid) == len({json.dumps(c, sort_keys=True) for c in grid})
     assert StrategyParamsV7().rise_step >= StrategyParamsV7().max_step and not StrategyParamsV7().fill_valley
+
+
+def test_v8_grid_holds_the_shipped_numbers_once_and_the_rule_puts_comfort_first():
+    grid = tune_strategy.grid_v8()
+    shipped = dataclasses.asdict(StrategyParamsV8())
+    assert grid.count(shipped) == 1 and len(grid) == 36 == len({json.dumps(c, sort_keys=True) for c in grid})
+    base = [{"discomfort_hot_proportion": 0.05}, {"discomfort_hot_proportion": 0.003}]
+    ref = {"discomfort_cold_proportion": 0.011}
+    ok = {"discomfort_cold_proportion": 0.0115, "ramping_average": 0.99, "daily_peak_average": 0.89,
+          "all_time_peak_average": 0.85, "cost_total": 0.95}
+    months = [{"discomfort_hot_proportion": 0.01}, {"discomfort_hot_proportion": 0.003}]
+    assert tune_strategy.qualifies_v8(ok, months, base, ref)
+    assert not tune_strategy.qualifies_v8(ok, [months[0], {"discomfort_hot_proportion": 0.004}], base, ref)
+    assert not tune_strategy.qualifies_v8({**ok, "discomfort_cold_proportion": 0.0125}, months, base, ref)
+    assert not tune_strategy.qualifies_v8({**ok, "ramping_average": 1.01}, months, base, ref)

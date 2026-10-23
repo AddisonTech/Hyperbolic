@@ -295,6 +295,26 @@ class StrategyParamsV7(StrategyParamsV5):
 
 
 @dataclass(frozen=True)
+class StrategyParamsV8(StrategyParamsV7):
+    """Numbers in the prompt version 8 strategy: version 7's, plus extra cooling in a room that runs
+    warm. A trim leaves an overcooled room at its setpoint instead of the baseline's 2 C below it, so
+    the next day's heat (or an outage) can carry it over the top of the band. strategy_plan_v8
+    executes it and prompt version 8 shows its actions. Chosen on the tuning dataset
+    (scripts/tune_strategy.py --version 8), never on the reported month: the cheapest of the 36
+    settings tried that keeps every tuning month at or below the baseline's too-warm share."""
+
+    # Added in 0.10.0.
+    warm_margin_c: float = 1.5         # an occupied room this far above its setpoint is running warm
+    warm_boost: float = 0.05           # ... and its cooling is raised up to this far above the baseline action;
+                                       # 0 is no extra cooling
+    warm_ramp_c: float = 1.0           # the boost grows from 0 to warm_boost over this many degrees beyond
+                                       # warm_margin_c; 0 adds it all at once
+    night_from_hour: int = 0           # from this hour of the day (1 to 24) until night_until_hour no trim
+    night_until_hour: int = 6          # starts and a held trim is ended; 0 is no night rule. Searched and not
+                                       # shipped: it raised cost and cleared no warm hour
+
+
+@dataclass(frozen=True)
 class RuleParamsV2:
     """Knobs of the 0.3.0 rule-based policy for prompt version 2 observations, kept as tuned
     then so the 0.3.0 reference result reproduces."""
@@ -330,7 +350,8 @@ class ScriptedSupervisor:
     how the strategy's numbers are chosen offline, and likewise for version 5
     (strategy_plan_v5). Version 6 runs the same version 5 strategy, never ends a trim early,
     and leaves holding trims to the envelope. Version 7 (strategy_plan_v7) keeps every action
-    inside the ranges the observation shows and uses the version 7 battery plan. Version 2
+    inside the ranges the observation shows and uses the version 7 battery plan; version 8
+    (strategy_plan_v8) adds extra cooling in a warm room. Version 2
     observations get the 0.3.0 rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
@@ -342,7 +363,8 @@ class ScriptedSupervisor:
     def __init__(self, model_key: str = DEFAULT_MODEL, faults: dict[int, str] | None = None,
                  tokens: tuple[int, int] = (0, 0), params: RuleParams | None = None,
                  params_v2: RuleParamsV2 | None = None, strategy: StrategyParams | None = None,
-                 strategy_v5: StrategyParamsV5 | None = None, strategy_v7: StrategyParamsV7 | None = None) -> None:
+                 strategy_v5: StrategyParamsV5 | None = None, strategy_v7: StrategyParamsV7 | None = None,
+                 strategy_v8: StrategyParamsV8 | None = None) -> None:
         self.model_key = model_key
         self.faults = dict(faults or {})
         self.tokens = tokens
@@ -351,6 +373,7 @@ class ScriptedSupervisor:
         self.strategy = strategy or StrategyParams()
         self.strategy_v5 = strategy_v5 or StrategyParamsV5()
         self.strategy_v7 = strategy_v7 or StrategyParamsV7()
+        self.strategy_v8 = strategy_v8 or StrategyParamsV8()
 
     @staticmethod
     def default_faults(hours: int) -> dict[int, str]:
@@ -371,7 +394,10 @@ class ScriptedSupervisor:
         if fault == "malformed":
             return CallResult('{"reason": "charge batteries", "Building_1": {"battery": 0.4', *self.tokens,
                               stop_reason="end_turn", model="scripted")
-        if "cooling_range" in next(iter(obs["buildings"].values()), {}):  # version 7
+        first = next(iter(obs["buildings"].values()), {})
+        if "strategy" in first:  # version 8
+            reply = strategy_plan_v8(obs, self.strategy_v8)
+        elif "cooling_range" in first:  # version 7
             reply = strategy_plan_v7(obs, self.strategy_v7)
         elif "smoothing" in obs:
             reply = strategy_plan_v5(obs, self.strategy_v5)
@@ -830,6 +856,57 @@ def strategy_plan_v7(obs: dict, p: StrategyParamsV7 | None = None) -> dict:
         reply[b] = {"cooling": cooling, "dhw": 0.0, "battery": min(max(battery[b], lo), hi), "end_trim": None}
     reason = "; ".join([battery_reason[0].lower() + battery_reason[1:], *sorted(notes)])
     return {"reason": (reason[0].upper() + reason[1:])[:dc.REASON_TARGET_CHARS], **reply}
+
+
+WARM_NOTE = "cool a warm room a little more"
+NIGHT_NOTE = "no cooling trim at night"
+NIGHT_END_TRIM = "night: the room cools back to its cushion for tomorrow"
+
+
+def night_now(hour: int, p: StrategyParamsV8) -> bool:
+    """Whether hour of the day (1 to 24) falls in the strategy's no-trim night."""
+    if p.night_from_hour <= 0:
+        return False
+    if p.night_from_hour <= p.night_until_hour:
+        return p.night_from_hour <= hour < p.night_until_hour
+    return hour >= p.night_from_hour or hour < p.night_until_hour
+
+
+def strategy_plan_v8(obs: dict, p: StrategyParamsV8 | None = None) -> dict:
+    """The prompt version 8 strategy: version 7's, with no trim at night (none starts, a held one is
+    ended with end_trim) and an occupied room more than warm_margin_c above its setpoint, with no
+    trim held, cooled up to warm_boost above baseline_action within cooling_range. Prompt version 8
+    shows each building's result as strategy."""
+    p = p or StrategyParamsV8()
+    reply = strategy_plan_v7(obs, p)
+    warm = night = False
+    if night_now(int(obs["hour"]), p):
+        for b, s in sorted(obs["buildings"].items()):
+            base = s["baseline_action"]["cooling"]
+            if s["trim"]["end_trim_ok"]:
+                reply[b]["cooling"], reply[b]["end_trim"] = None, NIGHT_END_TRIM
+                night = True
+            elif s["trim"]["state"] not in ("hold", "ease") and reply[b]["cooling"] is not None and base is not None \
+                    and reply[b]["cooling"] < base:
+                reply[b]["cooling"] = None
+                night = True
+    for b, s in sorted(obs["buildings"].items()):
+        gap, rng = s["indoor_vs_setpoint_c"], s["cooling_range"]
+        base = s["baseline_action"]["cooling"]
+        # In an outage the grid cannot serve extra cooling, and CityLearn counts it as unserved energy.
+        if (p.warm_boost <= 0 or not s["occupied"] or s["power_outage"] or gap is None or rng is None or base is None
+                or s["trim"]["state"] in ("hold", "ease") or gap < p.warm_margin_c):
+            continue
+        boost = p.warm_boost if p.warm_ramp_c <= 0 else p.warm_boost * min(1.0, (gap - p.warm_margin_c) / p.warm_ramp_c)
+        # The baseline arrives rounded to 3 decimals: keep 0.001 clear of the deviation limit.
+        cooling = min(max(math.floor((base + boost - 0.001) * 1000) / 1000, rng[0]), rng[1])
+        if cooling > base + 0.001:
+            reply[b]["cooling"] = cooling
+            warm = True
+    notes = [*([NIGHT_NOTE] if night else []), *([WARM_NOTE] if warm else [])]
+    if notes:
+        reply["reason"] = "; ".join([reply["reason"], *notes])[:dc.REASON_TARGET_CHARS]
+    return reply
 
 
 class HoldSupervisor:

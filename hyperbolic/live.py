@@ -75,10 +75,10 @@ DURATIONS = [
     {"id": "week", "label": "1 week (167 hours)", "hours": 167},
     {"id": "month", "label": "Full month (719 hours)", "hours": dc.EPISODE_HOURS},
 ]
-# Typical prompt version 7 request and reply, for a cost estimate before any run is recorded: the
-# 0.8.0 live month averaged 5,245 input and 429 output tokens on version 6, version 7 requests are
-# 1.7 percent smaller, and replies that send a held trim as a number run a little longer.
-TYPICAL_TOKENS = (5160, 450)
+# Typical prompt version 8 request and reply, for a cost estimate before any run is recorded: the
+# 0.9.0 live month averaged 5,185 input and 245 output tokens on version 7, version 8 requests are
+# 12 percent smaller, and replies that send the strategy's cooling as a number may run a little longer.
+TYPICAL_TOKENS = (4560, 260)
 
 
 def key_status(env: dict[str, str] | None = None) -> dict:

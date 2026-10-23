@@ -1,14 +1,16 @@
-"""Command line: hyperbolic baseline | run | replay | compare | serve."""
+"""Command line: hyperbolic baseline | run | replay | compare | months | serve."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 from . import __version__
 from . import district as dc
+from . import months as mo
 from .envelope import Envelope
 from .model import (
     DEFAULT_BUDGET_USD,
@@ -42,25 +44,29 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--hours", type=int, default=None,
                    help=f"stop after this many hours (default: the full {dc.EPISODE_HOURS} hour episode)")
     p.add_argument("--runs-dir", type=Path, default=Path("runs"), help="where run folders go (default: runs)")
+    p.add_argument("--month", default=mo.PHASE2, choices=[m.key for m in mo.months()],
+                   help=f"which month of the month set to run (default: {mo.PHASE2}, the reported month)")
 
 
-def _sim(control: bool):
+def _sim(control: bool, schema: Path | None = None):
     from .sim import CityLearnSimulator
 
-    return CityLearnSimulator(control=control)
+    return CityLearnSimulator(control=control, schema=schema)
 
 
 def cmd_baseline(args) -> int:
-    sim = _sim(control=False)
-    try:
-        sim.check_hours(args.hours)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    out = new_run_dir(args.runs_dir, "baseline", "citylearn")
-    print(f"baseline, {dc.DATASET} -> {out}")
-    res = run_session(sim, BaselineController(), RunWriter(out), args.hours,
-                      {"kind": "citylearn", "control": False})
+    month = mo.month(args.month)
+    with tempfile.TemporaryDirectory() as tmp:
+        sim = _sim(control=False, schema=mo.month_schema(month, Path(tmp)))
+        try:
+            sim.check_hours(args.hours)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        out = new_run_dir(args.runs_dir, "baseline", "citylearn", month.dataset)
+        print(f"baseline, {month.dataset} -> {out}")
+        res = run_session(sim, BaselineController(), RunWriter(out), args.hours,
+                          {"kind": "citylearn", "control": False, "month": month.key}, dataset=month.dataset)
     _print_result(res)
     return 0
 
@@ -76,28 +82,31 @@ def cmd_run(args) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         print(f"model key found in {source}")
-    hours = args.hours or dc.EPISODE_HOURS
-    try:
-        sim = _sim(control=True)
-        sim.check_hours(args.hours)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    faults = ScriptedSupervisor.default_faults(hours) if args.inject_faults else None
-    sup = ScriptedSupervisor(args.model, faults=faults) if args.scripted else LiveSupervisor(args.model)
-    prompt_version, envelope_cfg = controller_settings(args.scripted, args.prompt_version)
-    ctl = AgentController(
-        supervisor=sup,
-        envelope=Envelope(envelope_cfg),
-        budget=Budget(limit_usd=args.budget),
-        max_tokens=args.max_tokens,
-        effort=args.effort,
-        prompt_version=prompt_version,
-    )
-    out = new_run_dir(args.runs_dir, "agent", "citylearn")
-    print(f"agent, {dc.DATASET}, {sup.kind} replies, {MODELS[args.model]['id']}, "
-          f"budget ${args.budget:.2f} -> {out}")
-    res = run_session(sim, ctl, RunWriter(out), args.hours, {"kind": "citylearn", "control": True})
+    month = mo.month(args.month)
+    hours = args.hours or mo.hours(month)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            sim = _sim(control=True, schema=mo.month_schema(month, Path(tmp)))
+            sim.check_hours(args.hours)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        faults = ScriptedSupervisor.default_faults(hours) if args.inject_faults else None
+        sup = ScriptedSupervisor(args.model, faults=faults) if args.scripted else LiveSupervisor(args.model)
+        prompt_version, envelope_cfg = controller_settings(args.scripted, args.prompt_version)
+        ctl = AgentController(
+            supervisor=sup,
+            envelope=Envelope(envelope_cfg),
+            budget=Budget(limit_usd=args.budget),
+            max_tokens=args.max_tokens,
+            effort=args.effort,
+            prompt_version=prompt_version,
+        )
+        out = new_run_dir(args.runs_dir, "agent", "citylearn", month.dataset)
+        print(f"agent, {month.dataset}, {sup.kind} replies, {MODELS[args.model]['id']}, "
+              f"budget ${args.budget:.2f} -> {out}")
+        res = run_session(sim, ctl, RunWriter(out), args.hours,
+                          {"kind": "citylearn", "control": True, "month": month.key}, dataset=month.dataset)
     _print_result(res)
     return 0
 
@@ -147,6 +156,35 @@ def cmd_compare(args) -> int:
     print(f"  model calls {r['calls']}, clamped hours {r['clamped_hours']}, fallback hours {r['fallback_hours']}, "
           f"cost ${r['cost_usd']:.4f} of ${r['budget_usd']:.2f}{' (budget stop hit)' if r['budget_stopped'] else ''}")
     print(f"\nviewer data written to {args.out}")
+    return 0
+
+
+def cmd_months(args) -> int:
+    import concurrent.futures as cf
+    import multiprocessing as mp
+
+    keys = args.months or [m.key for m in mo.months()]
+    rows = []
+    for d in args.run or []:
+        try:
+            rows.append(mo.recorded_run(Path(d)))
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"error: --run {d}: {exc}", file=sys.stderr)
+            return 1
+    with tempfile.TemporaryDirectory() as tmp:
+        jobs = [(c, k, tmp) for c in args.controllers for k in keys]
+        print(f"{len(jobs)} CityLearn episodes ({', '.join(args.controllers)} on {', '.join(keys)}), no model calls")
+        # spawn, not fork: forking after torch has started its threads can deadlock.
+        with cf.ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp.get_context("spawn")) as pool:
+            rows = list(pool.map(mo.run_month, jobs)) + rows
+    for r in rows:
+        if r["controller"] in mo.CONTROLLERS:
+            r["controller"] = mo.CONTROLLERS[r["controller"]][0]
+    rep = mo.report(rows)
+    print(mo.table(rep))
+    if args.out:
+        args.out.write_text(json.dumps(rep, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"\nreport written to {args.out}")
     return 0
 
 
@@ -217,7 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"observation and prompt version (default: {PROMPT_VERSION}; with --scripted, "
                         f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while versions 4 and 5 "
                         "run their strategies literally, version 6 runs the version 5 strategy with the "
-                        "trim hold and version 7 keeps it inside the ranges its observation shows)")
+                        "trim hold, version 7 keeps it inside the ranges its observation shows and version 8 "
+                        "adds extra cooling in a warm room)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")
@@ -233,6 +272,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also print this finished agent run's KPIs, for example the rule-based controller "
                         "(repeatable; the viewer data is unchanged)")
     c.set_defaults(func=cmd_compare)
+
+    mm = sub.add_parser("months", help="run offline controllers on every month of the month set and compare them")
+    mm.add_argument("--controllers", nargs="+", default=list(mo.CONTROLLERS), choices=list(mo.CONTROLLERS),
+                    help="offline controllers to run (default: all of them)")
+    mm.add_argument("--months", nargs="+", default=None, choices=[m.key for m in mo.months()],
+                    help="months to run (default: every month available locally)")
+    mm.add_argument("--run", action="append", metavar="RUN_DIR",
+                    help="also show this finished run at the month it was recorded on (repeatable)")
+    mm.add_argument("--jobs", type=int, default=None, help="parallel simulations (default: one per CPU)")
+    mm.add_argument("--out", type=Path, default=None, help="optionally write the report as JSON")
+    mm.set_defaults(func=cmd_months)
 
     sv = sub.add_parser("serve", help="watch a run live in the browser (local only, 127.0.0.1)")
     sv.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1 (default: 8765)")
