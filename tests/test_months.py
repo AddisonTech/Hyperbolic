@@ -90,7 +90,7 @@ def test_cli_takes_a_month_for_baseline_and_run_and_has_the_months_report():
     assert p.parse_args(["baseline"]).month == "phase2"
     a = p.parse_args(["months", "--controllers", "rule", "v8", "--months", "phase2"])
     assert a.controllers == ["rule", "v8"] and a.months == ["phase2"]
-    assert p.parse_args(["months"]).controllers == ["baseline", "rule", "v7", "v8"]
+    assert p.parse_args(["months"]).controllers == ["baseline", "rule", "v7", "v8", "v9"]
     with pytest.raises(SystemExit):
         p.parse_args(["run", "--month", "march"])
 

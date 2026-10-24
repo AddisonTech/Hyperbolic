@@ -315,6 +315,20 @@ class StrategyParamsV8(StrategyParamsV7):
 
 
 @dataclass(frozen=True)
+class StrategyParamsV9(StrategyParamsV8):
+    """Numbers in the prompt version 9 strategy: version 8's, with a little charge kept back through the
+    top-price hours for the evening shave. The 0.10.0 all-time peaks fell in an evening hour just after
+    the top-price discharge, with every battery at its floor. strategy_plan_v9 executes it. Chosen on the
+    four months of the month set (scripts/tune_strategy.py --version 9) under the 0.11.0 acceptance
+    rule: the only one of 44 settings (found in a finer second pass, after the first 36 passed none)
+    with a lower all-time peak and ramping than version 8 at no more than 0.001 of cost, emissions,
+    discomfort or too warm; larger reserves cut the peak further but cost about 0.003 per 0.05."""
+
+    evening_reserve: float = 0.01      # state of charge kept above the floor in the top-price hours, so the
+                                       # evening shave has something to discharge
+
+
+@dataclass(frozen=True)
 class RuleParamsV2:
     """Knobs of the 0.3.0 rule-based policy for prompt version 2 observations, kept as tuned
     then so the 0.3.0 reference result reproduces."""
@@ -351,7 +365,8 @@ class ScriptedSupervisor:
     (strategy_plan_v5). Version 6 runs the same version 5 strategy, never ends a trim early,
     and leaves holding trims to the envelope. Version 7 (strategy_plan_v7) keeps every action
     inside the ranges the observation shows and uses the version 7 battery plan; version 8
-    (strategy_plan_v8) adds extra cooling in a warm room. Version 2
+    (strategy_plan_v8) adds extra cooling in a warm room, and version 9 (strategy_plan_v9) keeps a
+    little charge for the evening shave. Version 2
     observations get the 0.3.0 rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
@@ -364,7 +379,7 @@ class ScriptedSupervisor:
                  tokens: tuple[int, int] = (0, 0), params: RuleParams | None = None,
                  params_v2: RuleParamsV2 | None = None, strategy: StrategyParams | None = None,
                  strategy_v5: StrategyParamsV5 | None = None, strategy_v7: StrategyParamsV7 | None = None,
-                 strategy_v8: StrategyParamsV8 | None = None) -> None:
+                 strategy_v8: StrategyParamsV8 | None = None, strategy_v9: StrategyParamsV9 | None = None) -> None:
         self.model_key = model_key
         self.faults = dict(faults or {})
         self.tokens = tokens
@@ -374,6 +389,7 @@ class ScriptedSupervisor:
         self.strategy_v5 = strategy_v5 or StrategyParamsV5()
         self.strategy_v7 = strategy_v7 or StrategyParamsV7()
         self.strategy_v8 = strategy_v8 or StrategyParamsV8()
+        self.strategy_v9 = strategy_v9 or StrategyParamsV9()
 
     @staticmethod
     def default_faults(hours: int) -> dict[int, str]:
@@ -395,7 +411,9 @@ class ScriptedSupervisor:
             return CallResult('{"reason": "charge batteries", "Building_1": {"battery": 0.4', *self.tokens,
                               stop_reason="end_turn", model="scripted")
         first = next(iter(obs["buildings"].values()), {})
-        if "strategy" in first:  # version 8
+        if "strategy" in first and "shave_now" in obs["peak"]:  # version 9
+            reply = strategy_plan_v9(obs, self.strategy_v9)
+        elif "strategy" in first:  # version 8
             reply = strategy_plan_v8(obs, self.strategy_v8)
         elif "cooling_range" in first:  # version 7
             reply = strategy_plan_v7(obs, self.strategy_v7)
@@ -907,6 +925,13 @@ def strategy_plan_v8(obs: dict, p: StrategyParamsV8 | None = None) -> dict:
     if notes:
         reply["reason"] = "; ".join([reply["reason"], *notes])[:dc.REASON_TARGET_CHARS]
     return reply
+
+
+def strategy_plan_v9(obs: dict, p: StrategyParamsV9 | None = None) -> dict:
+    """The prompt version 9 strategy: version 8's, keeping evening_reserve of charge above the floor
+    through the top-price hours, so the shave after them still has charge. Prompt version 9 shows
+    each building's result as strategy."""
+    return strategy_plan_v8(obs, p or StrategyParamsV9())
 
 
 class HoldSupervisor:

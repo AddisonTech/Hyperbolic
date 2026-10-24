@@ -221,9 +221,14 @@ def dumps(data: dict) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
 
 
-def write_viewer_data(pair: tuple[Path, Path], out_path: Path) -> dict:
+def write_viewer_data(pair: tuple[Path, Path], out_path: Path, holdout_final: bool = False) -> dict:
     """Write viewer.json and, next to it, viewer.js (the same data as a script so the
-    page also works when opened straight from disk)."""
+    page also works when opened straight from disk). A pair on the sealed holdout needs
+    holdout_final."""
+    from .months import guard
+
+    guard([json.loads((Path(d) / "manifest.json").read_text(encoding="utf-8")).get("dataset") for d in pair],
+          holdout_final)
     data = build_viewer_data(pair)
     text = dumps(data)
     out_path.parent.mkdir(parents=True, exist_ok=True)

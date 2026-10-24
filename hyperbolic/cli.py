@@ -44,8 +44,9 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--hours", type=int, default=None,
                    help=f"stop after this many hours (default: the full {dc.EPISODE_HOURS} hour episode)")
     p.add_argument("--runs-dir", type=Path, default=Path("runs"), help="where run folders go (default: runs)")
-    p.add_argument("--month", default=mo.PHASE2, choices=[m.key for m in mo.months()],
-                   help=f"which month of the month set to run (default: {mo.PHASE2}, the reported month)")
+    p.add_argument("--month", default=mo.PHASE2, choices=[m.key for m in mo.all_months()],
+                   help=f"which month of the month set to run (default: {mo.PHASE2}, the reported month), or a "
+                        "month of the sealed holdout, whose agent KPIs are not printed (see HOLDOUT.md)")
 
 
 def _sim(control: bool, schema: Path | None = None):
@@ -107,6 +108,12 @@ def cmd_run(args) -> int:
               f"budget ${args.budget:.2f} -> {out}")
         res = run_session(sim, ctl, RunWriter(out), args.hours,
                           {"kind": "citylearn", "control": True, "month": month.key}, dataset=month.dataset)
+    if month.holdout:
+        print(f"  done: {res['steps']} hours on the sealed holdout; KPIs are not shown. Score it once with "
+              f"hyperbolic months {mo.HOLDOUT_FLAG} (see HOLDOUT.md).")
+        if res.get("calls"):
+            print(f"  model calls {res['calls']}, fallback {res['fallback_steps']}, cost ${res['cost_usd']:.4f}")
+        return 0
     _print_result(res)
     return 0
 
@@ -132,7 +139,11 @@ def cmd_compare(args) -> int:
         print("no matching baseline and agent runs found; run `hyperbolic baseline` and `hyperbolic run` first",
               file=sys.stderr)
         return 1
-    data = write_viewer_data(pair, args.out)
+    try:
+        data = write_viewer_data(pair, args.out, holdout_final=args.holdout_final)
+    except mo.HoldoutSealed as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     s = data["scenarios"][0]
     others = []
     for d in args.against or []:
@@ -164,15 +175,26 @@ def cmd_months(args) -> int:
     import multiprocessing as mp
 
     keys = args.months or [m.key for m in mo.months()]
+    try:
+        mo.guard(keys, args.holdout_final)
+        if args.holdout_final and not all(mo.is_holdout(k) for k in keys):
+            raise mo.HoldoutSealed(f"{mo.HOLDOUT_FLAG} scores the holdout months on their own; "
+                                   f"pass only {', '.join(m.key for m in mo.holdout_months())} with --months")
+    except mo.HoldoutSealed as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     rows = []
     for d in args.run or []:
         try:
-            rows.append(mo.recorded_run(Path(d)))
+            rows.append(mo.recorded_run(Path(d), args.holdout_final))
+        except mo.HoldoutSealed as exc:
+            print(f"error: --run {d}: {exc}", file=sys.stderr)
+            return 2
         except (OSError, ValueError, KeyError) as exc:
             print(f"error: --run {d}: {exc}", file=sys.stderr)
             return 1
     with tempfile.TemporaryDirectory() as tmp:
-        jobs = [(c, k, tmp) for c in args.controllers for k in keys]
+        jobs = [(c, k, tmp, args.holdout_final) for c in args.controllers for k in keys]
         print(f"{len(jobs)} CityLearn episodes ({', '.join(args.controllers)} on {', '.join(keys)}), no model calls")
         # spawn, not fork: forking after torch has started its threads can deadlock.
         with cf.ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp.get_context("spawn")) as pool:
@@ -255,8 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"observation and prompt version (default: {PROMPT_VERSION}; with --scripted, "
                         f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while versions 4 and 5 "
                         "run their strategies literally, version 6 runs the version 5 strategy with the "
-                        "trim hold, version 7 keeps it inside the ranges its observation shows and version 8 "
-                        "adds extra cooling in a warm room)")
+                        "trim hold, version 7 keeps it inside the ranges its observation shows, version 8 "
+                        "adds extra cooling in a warm room and version 9 keeps charge for the evening shave)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")
@@ -271,13 +293,18 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--against", action="append", metavar="AGENT_DIR",
                    help="also print this finished agent run's KPIs, for example the rule-based controller "
                         "(repeatable; the viewer data is unchanged)")
+    c.add_argument(mo.HOLDOUT_FLAG, dest="holdout_final", action="store_true",
+                   help="allow a pair on the sealed holdout: the one final scoring (see HOLDOUT.md)")
     c.set_defaults(func=cmd_compare)
 
     mm = sub.add_parser("months", help="run offline controllers on every month of the month set and compare them")
     mm.add_argument("--controllers", nargs="+", default=list(mo.CONTROLLERS), choices=list(mo.CONTROLLERS),
                     help="offline controllers to run (default: all of them)")
-    mm.add_argument("--months", nargs="+", default=None, choices=[m.key for m in mo.months()],
-                    help="months to run (default: every month available locally)")
+    mm.add_argument("--months", nargs="+", default=None, choices=[m.key for m in mo.all_months()],
+                    help="months to run (default: every month of the month set available locally; the "
+                         "holdout months only with --holdout-final)")
+    mm.add_argument(mo.HOLDOUT_FLAG, dest="holdout_final", action="store_true",
+                    help="score the sealed holdout months, on their own: the one final scoring (see HOLDOUT.md)")
     mm.add_argument("--run", action="append", metavar="RUN_DIR",
                     help="also show this finished run at the month it was recorded on (repeatable)")
     mm.add_argument("--jobs", type=int, default=None, help="parallel simulations (default: one per CPU)")

@@ -39,6 +39,13 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      0.9.0 live month followed strategy_battery but rarely started a cooling trim itself. The
      strategy adds extra cooling in an occupied room that runs warm (the hot-side fix), and
      signal_outlook is dropped. The envelope's rules are the same as for version 6.
+  9  v0.11.0. The 0.10.0 live months sent strategy almost everywhere, but sent null where it
+     started a trim (state off) and left the batteries idle where it shaved after the top-price
+     hours or on a flat-price day, as the version 8 wording allowed ("Before them discharge only to
+     shave", "Idle on flat_24h days"); the July and August all-time peaks fell in such hours.
+     Version 9 says to send every number, a trim start and a small shave too, and to shave in any
+     hour peak.shave_now (new) is true, and its strategy keeps a little charge for that shave. The
+     envelope's rules are the same as for version 6.
 """
 
 from __future__ import annotations
@@ -56,16 +63,18 @@ from .model import (
     StrategyParamsV5,
     StrategyParamsV7,
     StrategyParamsV8,
+    StrategyParamsV9,
     battery_plan_v5,
     battery_plan_v7,
     rule_plan_v3,
     strategy_plan_v8,
+    strategy_plan_v9,
 )
 from .signals import charge_spread, combined_signal
 
 
-PROMPT_VERSION = 8
-PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8)
+PROMPT_VERSION = 9
+PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
 # From this version the reply may end a held cooling trim early (envelope trim hold, 0.8.0).
 END_TRIM_FROM = 6
 
@@ -923,13 +932,13 @@ reply invalid."""
 
 
 def build_observation_v8(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
-                         envelope: Envelope | None) -> dict:
+                         envelope: Envelope | None, strategy=strategy_plan_v8) -> dict:
     """Version 8: version 7 with the version 8 strategy's whole action per building (strategy, with
     strategy_reason) in place of strategy_battery, and without signal_outlook, which no version 7 or
     8 strategy reads."""
     obs = build_observation_v7(state, ctx, last, look, envelope)
     del obs["strategy_battery_reason"], obs["signal_outlook"]
-    plan = strategy_plan_v8(obs)
+    plan = strategy(obs)
     obs["strategy_reason"] = plan["reason"]
     for b, ob in obs["buildings"].items():
         del ob["strategy_battery"]
@@ -995,6 +1004,77 @@ Reply with one JSON object only, matching the schema. "reason" is one plain sent
 reply invalid."""
 
 
+def build_observation_v9(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
+                         envelope: Envelope | None) -> dict:
+    """Version 9: version 8 with the version 9 strategy (charge kept for the evening shave) and
+    peak.shave_now, the strategy's own test for a peak-shaving hour, at any time of day."""
+    obs = build_observation_v8(state, ctx, last, look, envelope, strategy=strategy_plan_v9)
+    pk, sp = obs["peak"], StrategyParamsV9()
+    now, forecast = pk["district_load_now_kwh"], pk["forecast_today_kwh"]
+    pk["shave_now"] = bool(sp.shave > 0 and now is not None and forecast and now >= sp.shave * forecast)
+    return obs
+
+
+def system_prompt_v9(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    peak = ", battery then tank charging above peak.target_kwh" if cfg.peak_limit else ""
+    spread = ", grid charging when grid_charging_ok is false (spare solar may still be stored)" if cfg.spread_check else ""
+    sp = StrategyParamsV9()  # the strategy's numbers, chosen on the month set
+    full = sp.cold_margin_c + sp.cold_ramp_c
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings (CityLearn 2023 challenge data). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
+
+Goals, in this order, graded by CityLearn's own KPIs over the month against the no-control reference \
+(storage idle, heat pump meeting the ideal load):
+1. Comfort: no more discomfort, too cool or too warm, than the reference. Discomfort is any occupied \
+hour with indoor temperature outside setpoint +/- {cfg.comfort_band_k:g} C.
+2. Peaks and smoothness: the district's daily and monthly peak, daily load factor and ramping at or \
+better than the reference. Ramping counts every hour the district draws more than the hour before.
+3. Cost first, then carbon. Each building's cost counts equally, whatever its size.
+
+What you see:
+- strategy in each building: the action the strategy below gives this hour for cooling, dhw and \
+battery, worked out in code inside the envelope's ranges, with strategy_reason. Send it as given, every \
+number exactly: battery -0.033 is not 0, and cooling under baseline_action is not null, trim state off \
+too. Where you differ, say why.
+- cooling_range and battery_range: the values the safety envelope lets through this hour without a \
+clamp. cooling_range null: only the baseline passes.
+- trim: the cooling trim the envelope carries: depth below baseline_action, state (off, hold, ease, \
+end), min_depth, end_trim_ok. last_clamp: what the envelope changed there last hour, and why.
+- price_plan, battery, indoor_vs_setpoint_c, smoothing, peak and next_24h: what the strategy reads.
+
+Strategy (strategy already applies it):
+1. Cooling. An occupied room more than {sp.cold_margin_c:g} C below its setpoint is overcooled: cooling \
+goes below baseline_action, from 0 at {sp.cold_margin_c:g} C below to {sp.cold_trim:g} at {full:g} C or more \
+below. That starts a trim when state is off; while it is held, cooling is a number inside cooling_range, \
+never null. A trim leaves the room at its setpoint, without the reference's cushion, so an occupied room \
+running warm with no trim held gets more cooling than baseline_action: from 0 at {sp.warm_margin_c:g} C \
+above its setpoint to {sp.warm_boost:g} at {sp.warm_margin_c + sp.warm_ramp_c:g} C or more above. \
+Otherwise cooling is null, exactly baseline_action.
+2. Battery. Discharge the usable charge evenly over the top-price hours left, keeping {sp.evening_reserve:g} \
+above the floor, each hour no more than load_now_kwh. In any other hour, after the top price and on \
+flat_24h days too, shave when peak.shave_now (district_load_now_kwh at least {sp.shave:g} x \
+forecast_today_kwh): cover the building's own load with whatever charge is left. Charge from the grid only when grid_charging_ok, in the \
+cheapest, cleanest hours, up to {sp.charge_rate:g} of capacity per hour within headroom_kwh, to be near \
+{sp.soc_target:g} when the top price starts. Store spare solar any time. Else idle on flat_24h days.
+3. Leave the hot water tank at 0.
+
+Actions per building, null keeps baseline_action:
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- end_trim: null, or a short reason to end a held trim now (only when end_trim_ok, with null cooling).
+
+The ranges already apply the envelope's range, rate, state of charge ({cfg.soc_min:g} to \
+{cfg.soc_max:g}), deviation, comfort and trim hold rules. It also clamps the tank by the same rate \
+({cfg.dhw_rate_per_step:g}) and charge limits{spread}{peak}. An invalid reply uses the baseline action \
+everywhere for that hour. Clamps are logged against you.
+
+Reply with one JSON object only, matching the schema. "reason" is one plain sentence of at most \
+{dc.REASON_TARGET_CHARS} characters. A reason over {dc.REASON_MAX_CHARS} characters makes the whole \
+reply invalid."""
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -1013,6 +1093,8 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v7(state, ctx, last, look, envelope)
     if version == 8:
         return build_observation_v8(state, ctx, last, look, envelope)
+    if version == 9:
+        return build_observation_v9(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
 
@@ -1028,7 +1110,7 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
                   prompt_version: int = 1) -> dict:
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
               4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6,
-              7: system_prompt_v7, 8: system_prompt_v8}[prompt_version](cfg, buildings)
+              7: system_prompt_v7, 8: system_prompt_v8, 9: system_prompt_v9}[prompt_version](cfg, buildings)
     return {
         "model": MODELS[model_key]["id"],
         "max_tokens": max_tokens,
