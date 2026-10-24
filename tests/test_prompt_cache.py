@@ -24,6 +24,8 @@ from hyperbolic.prompt import PROMPT_VERSION, PROMPT_VERSIONS, system_text
 from hyperbolic.runner import AgentController, NullWriter, RunWriter, controller_settings, load_jsonl, replay_run, run_session
 
 quiet = lambda *_: None  # noqa: E731
+# Every prompt version a run can use, written out so a new version has to be added here.
+CACHED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 
 class CapturingSupervisor:
@@ -49,7 +51,7 @@ def _requests(version, hours=2):
     return sup.requests
 
 
-@pytest.mark.parametrize("version", PROMPT_VERSIONS)
+@pytest.mark.parametrize("version", CACHED_VERSIONS)
 def test_cache_control_is_on_the_last_block_of_the_system_prompt(version):
     req = _requests(version, hours=1)[0]
     blocks = req["system"]
@@ -60,7 +62,7 @@ def test_cache_control_is_on_the_last_block_of_the_system_prompt(version):
     assert "cache_control" not in json.dumps(req["messages"])  # nothing after the prefix is marked
 
 
-@pytest.mark.parametrize("version", PROMPT_VERSIONS)
+@pytest.mark.parametrize("version", CACHED_VERSIONS)
 def test_the_hours_state_comes_after_the_prefix(version):
     req = _requests(version, hours=1)[0]
     keys = list(req)
@@ -73,7 +75,7 @@ def test_the_hours_state_comes_after_the_prefix(version):
     assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-", text)  # no run ids
 
 
-@pytest.mark.parametrize("version", PROMPT_VERSIONS)
+@pytest.mark.parametrize("version", CACHED_VERSIONS)
 def test_prefix_is_byte_identical_across_consecutive_calls(version):
     first, second = _requests(version, hours=2)
     o1, o2 = observation_from_request(first), observation_from_request(second)
@@ -83,10 +85,15 @@ def test_prefix_is_byte_identical_across_consecutive_calls(version):
     assert first["messages"] != second["messages"]
 
 
-def test_current_prompt_is_long_enough_to_cache():
+def test_every_prompt_version_is_covered():
+    assert CACHED_VERSIONS == PROMPT_VERSIONS
+
+
+@pytest.mark.parametrize("version", sorted({8, 9, PROMPT_VERSION}))
+def test_prompt_is_long_enough_to_cache(version):
     # Claude Haiku 5.5 caches a prefix of 512 tokens or more. Plain English runs about 4 characters
     # a token; 6 is a conservative bound, so this many characters is at least 512 tokens.
-    text = system_text(_requests(PROMPT_VERSION, hours=1)[0])
+    text = system_text(_requests(version, hours=1)[0])
     assert len(text) >= 6 * 512
 
 
