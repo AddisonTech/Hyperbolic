@@ -1105,12 +1105,25 @@ def user_message(obs: dict) -> str:
     )
 
 
+def system_text(request: dict) -> str:
+    """The system prompt's text, whether it was sent as a plain string or as cached blocks."""
+    system = request["system"]
+    return system if isinstance(system, str) else "".join(b["text"] for b in system)
+
+
 def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], model_key: str,
                   max_tokens: int = DEFAULT_MAX_TOKENS, effort: str = DEFAULT_EFFORT,
-                  prompt_version: int = 1) -> dict:
+                  prompt_version: int = 1, prompt_cache: bool = False) -> dict:
+    """prompt_cache marks the system prompt as the cached prefix. It depends only on the envelope
+    config and the building names, so it is the same bytes every hour of a run; everything that
+    changes by the hour is in the user message after it. Off by default so runs recorded before
+    prompt caching rebuild the request they sent."""
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
               4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6,
               7: system_prompt_v7, 8: system_prompt_v8, 9: system_prompt_v9}[prompt_version](cfg, buildings)
+    if prompt_cache:
+        # Default 5 minute TTL: hourly calls run back to back, seconds apart.
+        system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     return {
         "model": MODELS[model_key]["id"],
         "max_tokens": max_tokens,

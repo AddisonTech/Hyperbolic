@@ -122,7 +122,8 @@ def cmd_replay(args) -> int:
     rep = replay_run(args.run_dir, out_dir=args.out)
     print(f"replayed {args.run_dir}: {rep.steps} hours, {rep.calls} recorded calls, {rep.api_calls} API calls")
     print(f"  identical decisions and actions: {rep.identical_steps}/{rep.steps}")
-    print(f"  clamped hours {rep.clamped_steps}, fallback hours {rep.fallback_steps}, recorded cost ${rep.cost_usd:.4f}")
+    print(f"  clamped hours {rep.clamped_steps}, fallback hours {rep.fallback_steps}, recorded cost ${rep.cost_usd:.4f}, "
+          f"cache hit rate {_hit_rate(rep.cache_hit_rate)}")
     if rep.deterministic:
         print("  deterministic: yes")
         return 0
@@ -165,7 +166,8 @@ def cmd_compare(args) -> int:
         print(f"  {label}: {d}")
     r = s["agent_run"]
     print(f"  model calls {r['calls']}, clamped hours {r['clamped_hours']}, fallback hours {r['fallback_hours']}, "
-          f"cost ${r['cost_usd']:.4f} of ${r['budget_usd']:.2f}{' (budget stop hit)' if r['budget_stopped'] else ''}")
+          f"cost ${r['cost_usd']:.4f} of ${r['budget_usd']:.2f}{' (budget stop hit)' if r['budget_stopped'] else ''}"
+          + (f", cache hit rate {_hit_rate(r['cache_hit_rate'])}" if "cache_hit_rate" in r else ""))
     print(f"\nviewer data written to {args.out}")
     return 0
 
@@ -245,6 +247,10 @@ def _fmt(v):
     return "n/a" if v is None else f"{v:.4f}"
 
 
+def _hit_rate(v) -> str:
+    return "n/a" if v is None else f"{100 * v:.1f}%"
+
+
 def _print_result(res: dict) -> None:
     k = res["district_kpis"]
     parts = [f"{key}={k[key]:.4f}" for key in dc.HEADLINE_KPIS if k.get(key) is not None]
@@ -252,6 +258,10 @@ def _print_result(res: dict) -> None:
     if res.get("calls"):
         print(f"  model calls {res['calls']}, clamped {res['clamped_steps']}, fallback {res['fallback_steps']}, "
               f"cost ${res['cost_usd']:.4f}{'; ' + res['budget_stop_reason'] if res['budget_stopped'] else ''}")
+        t = res.get("tokens")
+        if t:
+            print(f"  input tokens {t['input']} uncached, {t['cache_read']} cache reads, {t['cache_write']} cache "
+                  f"writes; output {t['output']}; cache hit rate {_hit_rate(res.get('cache_hit_rate'))}")
 
 
 def build_parser() -> argparse.ArgumentParser:

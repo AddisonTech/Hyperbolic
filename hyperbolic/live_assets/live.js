@@ -315,7 +315,8 @@
     table.appendChild(tb);
     box.appendChild(table);
     var facts = el("p", "live-note", "API spend " + money(ev.cost_usd) + ", " + ev.calls + " calls, " + ev.clamped + " clamped hours, " +
-      ev.fallback + " fallback hours" + (ev.budget_stopped ? ", budget stop hit" : "") + ". Recorded in " + ev.agent_run + "; replay it with `hyperbolic replay`.");
+      ev.fallback + " fallback hours" + (ev.cache_hit_rate != null ? ", cache hit rate " + fmt(100 * ev.cache_hit_rate, 1) + "%" : "") +
+      (ev.budget_stopped ? ", budget stop hit" : "") + ". Recorded in " + ev.agent_run + "; replay it with `hyperbolic replay`.");
     box.appendChild(facts);
     var pub = button("live-publish", "Publish to docs/data", "primary");
     var note = el("p", "live-note"); note.id = "live-published";

@@ -10,6 +10,7 @@ from hyperbolic import district as dc
 from hyperbolic.cli import main
 from hyperbolic.envelope import Envelope, EnvelopeConfig
 from hyperbolic.model import Budget, CallResult, ScriptedSupervisor, observation_from_request
+from hyperbolic.prompt import system_text
 from hyperbolic.runner import (
     AgentController,
     BaselineController,
@@ -163,7 +164,7 @@ def test_scripted_strategy_dry_run_and_replay(tmp_path, version):
     calls = load_jsonl(run_dir / "calls.jsonl")
     obs = observation_from_request(calls[5]["request"])
     assert {"reference_action", "indoor_vs_setpoint_c"} <= set(obs["buildings"]["Building_1"])
-    assert "reference_action" in calls[5]["request"]["system"]
+    assert "reference_action" in system_text(calls[5]["request"])
     assert ("smoothing" in obs) == (version == 5)
     rep = replay_run(run_dir)
     assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == HOURS
@@ -202,7 +203,7 @@ def test_v6_dry_run_with_the_trim_hold_and_replay(tmp_path):
     calls = load_jsonl(run_dir / "calls.jsonl")
     obs = observation_from_request(calls[5]["request"])
     assert {"strategy_battery", "cooling_trim_held"} <= set(obs["buildings"]["Building_1"])
-    assert "reference_action" not in json.dumps(obs) and "end_trim" in calls[5]["request"]["system"]
+    assert "reference_action" not in json.dumps(obs) and "end_trim" in system_text(calls[5]["request"])
     rep = replay_run(run_dir)
     assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == HOURS
 

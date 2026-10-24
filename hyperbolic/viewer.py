@@ -197,6 +197,8 @@ def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
             "clamped_hours": sum(1 for d in decisions if d["status"] == "clamped"),
             "fallback_hours": sum(1 for d in decisions if d["status"] == "fallback"),
             "budget_stopped": bool(ar.get("budget_stopped")),
+            # Only runs recorded with prompt caching carry it, so older viewer data is unchanged.
+            **({"cache_hit_rate": ar["cache_hit_rate"]} if "cache_hit_rate" in ar else {}),
             "envelope": am.get("envelope"),
             **_trim_end_count(am, decisions),
         },

@@ -3,8 +3,10 @@
 A run directory holds everything needed to replay it with zero model or simulator calls:
   manifest.json  settings, dataset, envelope config
   steps.jsonl    per hour: district state, actions applied, outcome, decision
-  calls.jsonl    per model call: full request, reply, tokens, cost
-  result.json    CityLearn KPIs and counts
+  calls.jsonl    per model call: full request, reply, tokens, cost. The reply's input_tokens is
+                 uncached input, beside cache_read_input_tokens and cache_creation_input_tokens
+                 (runs from before prompt caching record no cache counts and no cache reads).
+  result.json    CityLearn KPIs and counts, token totals and the cache hit rate
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from .model import (
     ReplayMismatch,
     ReplaySupervisor,
     Supervisor,
+    cache_hit_rate,
     call_cost_usd,
     request_sha256,
     worst_case_cost_usd,
@@ -170,11 +173,14 @@ class AgentController:
     max_tokens: int = 2000
     effort: str = "low"
     prompt_version: int = PROMPT_VERSION
+    # New runs cache the system prompt; replay passes the manifest's value (absent before caching).
+    prompt_cache: bool = True
     last: Decision | None = None
     lookahead: Lookahead = field(default_factory=Lookahead)
     peaks: PeakTracker | None = None
     mode: str = "agent"
     counts: dict = field(default_factory=lambda: {"calls": 0, "clamped": 0, "fallback": 0, "budget_skipped": 0})
+    tokens: dict = field(default_factory=lambda: {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0})
 
     def describe(self) -> dict:
         return {
@@ -185,6 +191,7 @@ class AgentController:
             "max_tokens": self.max_tokens,
             "effort": self.effort,
             "prompt_version": self.prompt_version,
+            "prompt_cache": self.prompt_cache,
         }
 
     def decide(self, step: int, state: dict, writer: RunWriter) -> tuple[Decision, dict | None]:
@@ -198,7 +205,7 @@ class AgentController:
         buildings = tuple(state["buildings"])
         obs = observe(self.prompt_version, state, ctx, self.last, self.lookahead, self.envelope)
         request = build_request(obs, self.envelope.config, buildings, self.supervisor.model_key,
-                                self.max_tokens, self.effort, self.prompt_version)
+                                self.max_tokens, self.effort, self.prompt_version, self.prompt_cache)
         worst = worst_case_cost_usd(self.supervisor.model_key, request)
         call_info = None
         if not self.budget.allows(worst):
@@ -211,9 +218,13 @@ class AgentController:
                 raise
             except Exception as exc:  # any client failure is a missing reply, never a crash
                 res = CallResult(None, error=f"client error: {type(exc).__name__}")
-            cost = call_cost_usd(self.supervisor.model_key, res.input_tokens, res.output_tokens)
+            cost = call_cost_usd(self.supervisor.model_key, res.input_tokens, res.output_tokens,
+                                 res.cache_read_input_tokens, res.cache_creation_input_tokens)
             self.budget.charge(cost)
             self.counts["calls"] += 1
+            for k, v in (("input", res.input_tokens), ("cache_read", res.cache_read_input_tokens),
+                         ("cache_write", res.cache_creation_input_tokens), ("output", res.output_tokens)):
+                self.tokens[k] += v
             sha = request_sha256(request)
             writer.call({
                 "step": step,
@@ -222,6 +233,8 @@ class AgentController:
                 "reply": {
                     "text": res.text,
                     "input_tokens": res.input_tokens,
+                    "cache_read_input_tokens": res.cache_read_input_tokens,
+                    "cache_creation_input_tokens": res.cache_creation_input_tokens,
                     "output_tokens": res.output_tokens,
                     "stop_reason": res.stop_reason,
                     "error": res.error,
@@ -351,6 +364,11 @@ def run_session(
         "budget_stop_reason": budget.stop_reason if budget else None,
         "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
     }
+    tokens = getattr(controller, "tokens", None)
+    if tokens is not None:
+        result["tokens"] = dict(tokens)
+        rate = cache_hit_rate(tokens["input"], tokens["cache_read"], tokens["cache_write"])
+        result["cache_hit_rate"] = None if rate is None else round(rate, 4)
     if stopped:
         result["stopped"] = True
         result["stop_reason"] = f"stopped by the user after {step} of {episode_hours} hours"
@@ -410,6 +428,7 @@ class ReplayReport:
     clamped_steps: int
     fallback_steps: int
     error: str | None = None
+    cache_hit_rate: float | None = None
 
     @property
     def deterministic(self) -> bool:
@@ -432,6 +451,8 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
             effort=sup["effort"],
             # Runs recorded before prompt versions existed used version 1.
             prompt_version=int(sup.get("prompt_version", 1)),
+            # Runs recorded before prompt caching sent the system prompt as a plain string.
+            prompt_cache=bool(sup.get("prompt_cache", False)),
         )
     writer: RunWriter = RunWriter(out_dir) if out_dir is not None else NullWriter()
     error = None
@@ -454,6 +475,9 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
         mismatched.append(min(len(replayed), len(sim.steps)))
     calls = load_jsonl(run_dir / "calls.jsonl")
     counts = getattr(controller, "counts", {})
+    replies = [c.get("reply") or {} for c in calls]
+    hit_rate = cache_hit_rate(*(sum(r.get(k, 0) or 0 for r in replies) for k in
+                                ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
     return ReplayReport(
         steps=len(sim.steps),
         identical_steps=identical,
@@ -464,4 +488,5 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
         clamped_steps=counts.get("clamped", 0),
         fallback_steps=counts.get("fallback", 0),
         error=error,
+        cache_hit_rate=hit_rate,
     )
