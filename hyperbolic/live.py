@@ -408,6 +408,7 @@ class LiveHub:
                 "stop_reason": run.result.get("stop_reason"), "steps": run.result["steps"], "hours": run.hours,
                 "agent_run": str(run.agent_dir), "baseline_run": str(run.baseline_dir), "kpis": rows,
                 "cost_usd": run.result["cost_usd"], "calls": run.result["calls"],
+                "cache_hit_rate": run.result.get("cache_hit_rate"),
                 "clamped": run.result["clamped_steps"], "fallback": run.result["fallback_steps"],
                 "budget_stopped": run.result["budget_stopped"], "budget_stop_reason": run.result["budget_stop_reason"],
             })

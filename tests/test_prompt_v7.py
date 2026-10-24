@@ -28,6 +28,7 @@ from hyperbolic.prompt import (
     observe,
     system_prompt_v6,
     system_prompt_v7,
+    system_text,
     trim_view,
 )
 from hyperbolic.runner import (
@@ -329,7 +330,7 @@ def test_v7_dry_run_and_replay(tmp_path):
                       sim_info={"kind": "citylearn", "control": True})
     assert res["steps"] == 24 and res["fallback_steps"] == 0
     calls = load_jsonl(run_dir / "calls.jsonl")
-    assert "cooling_range" in calls[5]["request"]["system"]
+    assert "cooling_range" in system_text(calls[5]["request"])
     rep = replay_run(run_dir)
     assert rep.deterministic and rep.api_calls == 0 and rep.identical_steps == 24
 

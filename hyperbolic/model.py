@@ -25,10 +25,13 @@ from . import district as dc
 
 KEY_ENV_VARS = ("HYPERBOLIC_ANTHROPIC_KEY", "TRIAGE_ANTHROPIC_KEY")
 
-# USD per million tokens (input, output).
+# USD per million tokens. input is uncached input; a cache write (5 minute TTL) bills at 1.25x
+# the input price and a cache read at 0.1x.
 MODELS = {
-    "haiku": {"id": "claude-haiku-5-5", "input_per_mtok": 0.10, "output_per_mtok": 0.50},
-    "sonnet": {"id": "claude-sonnet-5-5", "input_per_mtok": 2.00, "output_per_mtok": 10.00},
+    "haiku": {"id": "claude-haiku-5-5", "input_per_mtok": 0.10, "cache_write_per_mtok": 0.125,
+              "cache_read_per_mtok": 0.01, "output_per_mtok": 0.50},
+    "sonnet": {"id": "claude-sonnet-5-5", "input_per_mtok": 2.00, "cache_write_per_mtok": 2.50,
+               "cache_read_per_mtok": 0.20, "output_per_mtok": 10.00},
 }
 DEFAULT_MODEL = "haiku"
 DEFAULT_BUDGET_USD = 2.00
@@ -55,15 +58,35 @@ def request_sha256(request: dict) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-def call_cost_usd(model_key: str, input_tokens: int, output_tokens: int) -> float:
+def call_cost_usd(model_key: str, input_tokens: int, output_tokens: int,
+                  cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> float:
+    """input_tokens is uncached input only, as the API reports it beside the two cache counts."""
     p = MODELS[model_key]
-    return (input_tokens * p["input_per_mtok"] + output_tokens * p["output_per_mtok"]) / 1_000_000
+    return (input_tokens * p["input_per_mtok"] + cache_write_tokens * p["cache_write_per_mtok"]
+            + cache_read_tokens * p["cache_read_per_mtok"] + output_tokens * p["output_per_mtok"]) / 1_000_000
+
+
+def cache_hit_rate(input_tokens: int, cache_read_tokens: int, cache_write_tokens: int) -> float | None:
+    """Share of all input tokens served from the cache; None when there was no input."""
+    total = input_tokens + cache_read_tokens + cache_write_tokens
+    return None if total == 0 else cache_read_tokens / total
+
+
+def _cached_prefix_chars(request: dict) -> int:
+    """Characters up to and including the last block marked for caching (tools render before system)."""
+    system = request.get("system")
+    blocks = [*request.get("tools", []), *(system if isinstance(system, list) else [])]
+    marked = [i for i, b in enumerate(blocks) if b.get("cache_control")]
+    return len(json.dumps(blocks[: marked[-1] + 1], ensure_ascii=False)) if marked else 0
 
 
 def worst_case_cost_usd(model_key: str, request: dict) -> float:
-    """Upper bound for one call: about 3 characters per input token, full max_tokens output."""
+    """Upper bound for one call: about 3 characters per input token, full max_tokens output, and a
+    cached prefix priced as a cache write, the dearest way it can bill."""
     chars = len(json.dumps(request, ensure_ascii=False))
-    return call_cost_usd(model_key, math.ceil(chars / 3), int(request.get("max_tokens", DEFAULT_MAX_TOKENS)))
+    prefix = _cached_prefix_chars(request)
+    return call_cost_usd(model_key, math.ceil((chars - prefix) / 3), int(request.get("max_tokens", DEFAULT_MAX_TOKENS)),
+                         cache_write_tokens=math.ceil(prefix / 3))
 
 
 @dataclass
@@ -99,6 +122,9 @@ class CallResult:
     model: str | None = None
     latency_s: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
+    # input_tokens counts uncached input only; these are the cached prefix read or written.
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 class Supervisor(Protocol):
@@ -135,12 +161,13 @@ class LiveSupervisor:
         usage = resp.usage
         result = CallResult(
             text=None,
-            input_tokens=int(usage.input_tokens or 0) + int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-            + int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+            input_tokens=int(usage.input_tokens or 0),
             output_tokens=int(usage.output_tokens or 0),
             stop_reason=resp.stop_reason,
             model=resp.model,
             latency_s=latency,
+            cache_read_input_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
         )
         if resp.stop_reason == "refusal":
             result.error = "model declined the request"
@@ -154,6 +181,20 @@ class LiveSupervisor:
 
 class ReplayMismatch(RuntimeError):
     pass
+
+
+def _recorded_result(reply: dict) -> CallResult:
+    # Runs recorded before prompt caching carry no cache counts; their input_tokens is all input.
+    return CallResult(
+        text=reply.get("text"),
+        input_tokens=reply.get("input_tokens", 0),
+        output_tokens=reply.get("output_tokens", 0),
+        stop_reason=reply.get("stop_reason"),
+        error=reply.get("error"),
+        model=reply.get("model"),
+        cache_read_input_tokens=reply.get("cache_read_input_tokens", 0),
+        cache_creation_input_tokens=reply.get("cache_creation_input_tokens", 0),
+    )
 
 
 class ReplaySupervisor:
@@ -177,15 +218,7 @@ class ReplaySupervisor:
         sha = request_sha256(request)
         if sha != rec["request_sha256"]:
             raise ReplayMismatch(f"step {step}: request differs from recording")
-        reply = rec["reply"]
-        return CallResult(
-            text=reply.get("text"),
-            input_tokens=reply.get("input_tokens", 0),
-            output_tokens=reply.get("output_tokens", 0),
-            stop_reason=reply.get("stop_reason"),
-            error=reply.get("error"),
-            model=reply.get("model"),
-        )
+        return _recorded_result(rec["reply"])
 
 
 class RecordedReplySupervisor:
@@ -203,15 +236,7 @@ class RecordedReplySupervisor:
         rec = self._inner._by_step.get(step)
         if rec is None:
             return CallResult(None, error="no recorded reply for this hour")
-        reply = rec["reply"]
-        return CallResult(
-            text=reply.get("text"),
-            input_tokens=reply.get("input_tokens", 0),
-            output_tokens=reply.get("output_tokens", 0),
-            stop_reason=reply.get("stop_reason"),
-            error=reply.get("error"),
-            model=reply.get("model"),
-        )
+        return _recorded_result(rec["reply"])
 
 
 @dataclass(frozen=True)
