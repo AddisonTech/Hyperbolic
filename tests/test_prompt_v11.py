@@ -80,7 +80,7 @@ def _request_has_no_strategy(req: dict) -> None:
 
 
 def test_v11_is_selectable_and_not_the_default():
-    assert PROMPT_VERSION == 9 and BLIND_MODE == 11 and P.PROMPT_VERSIONS[-2:] == (10, 11)
+    assert PROMPT_VERSION == 9 and BLIND_MODE == 11 and P.PROMPT_VERSIONS[9:11] == (10, 11)
     assert controller_settings(False, 11) == (11, EnvelopeConfig())
     assert not P.free_mode(11) and P.free_mode(10)
 

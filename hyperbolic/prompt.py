@@ -60,6 +60,11 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      the envelope's own (with end_trim), with no deviation_reason. The version 9 strategy's action
      for the same observation is worked out every hour in code (shadow_strategy) and logged in the
      step record, never sent. The envelope's rules are the same as for version 6.
+ 12  v0.15.0, rules in words, an experiment beside the default. Exactly the version 11 observation (no
+     suggestion), and the version 11 system prompt plus the version 10 strategy section, the three
+     numbered rules with their StrategyParamsV9 numbers, worded as an instruction to apply that strategy
+     every hour. The reply is the envelope's own (with end_trim). shadow_strategy is logged every hour
+     exactly as in version 11, never sent. The envelope's rules are the same as for version 6.
 """
 
 from __future__ import annotations
@@ -89,7 +94,7 @@ from .signals import charge_spread, combined_signal
 
 
 PROMPT_VERSION = 9
-PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 # From this version the reply may end a held cooling trim early (envelope trim hold, 0.8.0).
 END_TRIM_FROM = 6
 # From this version (0.13.0, free mode) the strategy is a suggestion and every building whose actions
@@ -105,6 +110,15 @@ DEVIATION_TOLERANCE = 0.0005
 # Version 11 (0.14.0, blind mode): no strategy is shown; the version 9 strategy's action for the same
 # observation is only logged, as shadow_strategy.
 BLIND_MODE = 11
+# Version 12 (0.15.0, rules in words): the version 11 observation, and the version 9 strategy's rules in
+# the system prompt for the model to carry out itself; shadow_strategy is logged as in version 11.
+RULES_IN_WORDS = 12
+
+
+def logs_shadow(version: int) -> bool:
+    """Whether a prompt version logs the version 9 strategy's action every hour as shadow_strategy, never
+    sent: version 11 (blind mode) and version 12 (rules in words)."""
+    return version in (BLIND_MODE, RULES_IN_WORDS)
 
 
 def free_mode(version: int) -> bool:
@@ -1349,6 +1363,37 @@ Reply with one JSON object only, matching the schema. "reason" is one plain sent
 reply invalid."""
 
 
+def strategy_section_v12() -> str:
+    """The version 10 strategy section, its three rules word for word with their StrategyParamsV9 numbers,
+    under a heading that tells the model to apply it every hour (version 10 said the suggestion already
+    applied it)."""
+    sp = StrategyParamsV9()  # the strategy's numbers, chosen on the month set
+    full = sp.cold_margin_c + sp.cold_ramp_c
+    return f"""Strategy (apply it every hour, in every building, to choose cooling, dhw and battery):
+1. Cooling. An occupied room more than {sp.cold_margin_c:g} C below its setpoint is overcooled: cooling \
+goes below baseline_action, from 0 at {sp.cold_margin_c:g} C below to {sp.cold_trim:g} at {full:g} C or more \
+below. That starts a trim when state is off; while it is held, cooling is a number inside cooling_range, \
+never null. An occupied room running warm with no trim held gets more cooling than baseline_action: from \
+0 at {sp.warm_margin_c:g} C above its setpoint to {sp.warm_boost:g} at {sp.warm_margin_c + sp.warm_ramp_c:g} \
+C or more above. Otherwise cooling is null, exactly baseline_action. It never cools ahead of time.
+2. Battery. Discharge the usable charge evenly over the top-price hours left, keeping {sp.evening_reserve:g} \
+above the floor, each hour no more than load_now_kwh. In any other hour shave when peak.shave_now \
+(district_load_now_kwh at least {sp.shave:g} x forecast_today_kwh), covering the building's own load with \
+the charge left. Charge from the grid only when grid_charging_ok, in the cheapest, cleanest hours, up to \
+{sp.charge_rate:g} of capacity per hour within headroom_kwh, to be near {sp.soc_target:g} when the top \
+price starts. Store spare solar any time. Else idle on flat_24h days.
+3. Leave the hot water tank at 0."""
+
+
+def system_prompt_v12(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    """Rules in words: the version 11 prompt, unchanged, with the version 10 strategy section (as an
+    instruction) between what the agent sees and the actions."""
+    head, sep, tail = system_prompt_v11(cfg, buildings).partition("Actions per building.")
+    if not sep:
+        raise ValueError("the version 11 prompt has no actions section")
+    return f"{head}{strategy_section_v12()}\n\n{sep}{tail}"
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -1371,7 +1416,7 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v9(state, ctx, last, look, envelope)
     if version == 10:
         return build_observation_v10(state, ctx, last, look, envelope)
-    if version == 11:
+    if version in (11, 12):  # version 12 shows exactly the version 11 observation
         return build_observation_v11(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
@@ -1399,7 +1444,7 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
               4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6,
               7: system_prompt_v7, 8: system_prompt_v8, 9: system_prompt_v9,
-              10: system_prompt_v10, 11: system_prompt_v11}[prompt_version](cfg, buildings)
+              10: system_prompt_v10, 11: system_prompt_v11, 12: system_prompt_v12}[prompt_version](cfg, buildings)
     if prompt_cache:
         # Default 5 minute TTL: hourly calls run back to back, seconds apart.
         system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]

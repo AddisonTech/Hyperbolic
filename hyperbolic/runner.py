@@ -33,12 +33,12 @@ from .model import (
     worst_case_cost_usd,
 )
 from .prompt import (
-    BLIND_MODE,
     PROMPT_VERSION,
     Lookahead,
     build_request,
     end_trim_field,
     free_mode,
+    logs_shadow,
     observe,
     parse_reply_v10,
     shadow_strategy,
@@ -192,8 +192,9 @@ class AgentController:
     # Free mode (prompt version 10): this hour's departures from the suggestion, with their reasons.
     # None for earlier versions, so their step records are unchanged.
     deviations: dict | None = None
-    # Blind mode (prompt version 11): the version 9 strategy's reply for this hour's observation, worked
-    # out in code and never sent. None for other versions, so their step records are unchanged.
+    # Blind mode and rules in words (prompt versions 11 and 12): the version 9 strategy's reply for this
+    # hour's observation, worked out in code and never sent. None for other versions, so their step
+    # records are unchanged.
     shadow: dict | None = None
     counts: dict = field(default_factory=lambda: {"calls": 0, "clamped": 0, "fallback": 0, "budget_skipped": 0})
     tokens: dict = field(default_factory=lambda: {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0})
@@ -226,7 +227,7 @@ class AgentController:
         call_info = None
         if free_mode(self.prompt_version):
             self.deviations = {}
-        if self.prompt_version == BLIND_MODE:
+        if logs_shadow(self.prompt_version):
             self.shadow = shadow_strategy(obs)
         if not self.budget.allows(worst):
             decision = self.envelope.fallback(ctx, self.budget.stop_reason or "budget stop")
