@@ -1,5 +1,7 @@
 """Where a free-mode (prompt version 10) run left its suggestion, and what each departure was worth (0.13.0);
-from 0.14.0 the same for a blind-mode (prompt version 11) run against its shadow strategy, with agreement.
+from 0.14.0 the same for a blind-mode (prompt version 11) run against its shadow strategy, with agreement,
+and from 0.15.0 for a rules-in-words (prompt version 12) run, which shows the same observation and logs
+the same shadow strategy, so everything said of blind mode below holds for it too.
 
     python scripts/analyze_free_mode.py RUN_DIR [--jobs N] [--out FILE]
 
@@ -96,7 +98,8 @@ CLAIMS = {
 
 
 def is_blind(obs: dict) -> bool:
-    """A version 11 (blind mode) observation: version 10's fields without the suggestion."""
+    """A version 11 (blind mode) or version 12 (rules in words) observation: version 10's fields without the
+    suggestion."""
     first = next(iter(obs["buildings"].values()))
     return "suggestion" not in first and "cooling_power_kw" in first
 
@@ -110,7 +113,7 @@ def suggestion_of(obs: dict) -> dict:
     if is_blind(obs):
         plan = shadow_strategy(obs)
         return {b: {d: plan[b][d] for d in DEVICE_KEYS} for b in obs["buildings"]}
-    raise ValueError("this needs a prompt version 10 (free mode) or 11 (blind mode) run")
+    raise ValueError("this needs a prompt version 10 (free mode), 11 (blind mode) or 12 (rules in words) run")
 
 
 def check_shadow(run_dir: Path) -> int:

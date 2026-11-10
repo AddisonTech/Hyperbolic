@@ -75,15 +75,15 @@ class BlindPrecoolingSupervisor:
         return CallResult(json.dumps(reply), stop_reason="end_turn", model="scripted")
 
 
-def _blind_fake_run(tmp_path, supervisor, hours=48):
+def _blind_fake_run(tmp_path, supervisor, hours=48, version=11):
     from fakes import FakeDistrict
 
     from hyperbolic.envelope import Envelope, EnvelopeConfig
     from hyperbolic.model import Budget
     from hyperbolic.runner import AgentController, RunWriter, run_session
 
-    run = tmp_path / "blind"
-    ctl = AgentController(supervisor, Envelope(EnvelopeConfig()), Budget(2.0), prompt_version=11)
+    run = tmp_path / f"blind_v{version}"
+    ctl = AgentController(supervisor, Envelope(EnvelopeConfig()), Budget(2.0), prompt_version=version)
     run_session(FakeDistrict(), ctl, RunWriter(run), hours=hours, log=lambda *_: None)
     return run
 
@@ -187,6 +187,43 @@ def test_attribution_on_a_recorded_blind_mode_run(tmp_path):
     assert "rejected hours" not in results and "reasoned" not in results
     pre = rep["classes"]["precool"]
     assert pre["reasons_given"] == 0 and pre["claims"] == {}
+
+
+def test_a_rules_in_words_run_is_measured_against_its_shadow(tmp_path):
+    """Version 12 (0.15.0) shows the version 11 observation and logs the shadow the same way, so the script
+    reads it as it reads a blind-mode run: the same reference, departures and agreement."""
+    exact = _blind_fake_run(tmp_path / "exact", ScriptedSupervisor("haiku"), version=12)
+    assert fm.check_shadow(exact) == 48 and fm.deviations(exact) == []
+    assert fm.agreement(exact)["share"] == {"cooling": 1.0, "dhw": 1.0, "battery": 1.0, "all": 1.0}
+    v11 = _blind_fake_run(tmp_path, BlindPrecoolingSupervisor(), version=11)
+    v12 = _blind_fake_run(tmp_path, BlindPrecoolingSupervisor(), version=12)
+    assert fm.check_shadow(v12) == 48
+    assert fm.agreement(v12) == fm.agreement(v11)
+    strip = lambda rows: [{k: v for k, v in r.items() if k != "run"} for r in rows]  # noqa: E731
+    assert strip(fm.deviations(v12)) == strip(fm.deviations(v11)) and fm.deviations(v12)
+
+
+@needs_citylearn
+def test_attribution_on_a_recorded_rules_in_words_run(tmp_path):
+    from hyperbolic import months as mo
+    from hyperbolic.envelope import Envelope, EnvelopeConfig
+    from hyperbolic.model import Budget
+    from hyperbolic.runner import AgentController, RunWriter, run_session
+    from hyperbolic.sim import CityLearnSimulator
+
+    month = mo.month("tuning-07")
+    run = tmp_path / "run"
+    ctl = AgentController(BlindPrecoolingSupervisor(), Envelope(EnvelopeConfig()), Budget(2.0), prompt_version=12)
+    res = run_session(CityLearnSimulator(control=True, schema=mo.month_schema(month, tmp_path / "m")), ctl,
+                      RunWriter(run), hours=36, log=lambda *_: None, sim_info={"kind": "citylearn", "control": True},
+                      dataset=month.dataset)
+    assert res["fallback_steps"] == 0
+    rows = fm.deviations(run)
+    assert "precool" in {r["class"] for r in rows}
+    results = fm.attribute(run, rows, jobs=4)
+    rep = fm.report(run, rows, results)
+    assert rep["control_reproduces"] and rep["all_equals_strategy"]
+    assert all(r["fallback"] == 0 for r in results.values())
 
 
 def test_claims_read_the_hypothesis():
