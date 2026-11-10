@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.14.0 (unreleased)
+## 0.14.0 (2026-11-10)
 
 Question: does Sonnet agree with the v9 rules on its own, or did it only defer to them in 0.13.0 because they were handed to it? Prompt version 11 ("blind mode") is the version 10 observation without the suggestion, and a system prompt with no strategy rules or numbers. Same month as 0.13.0, same envelope. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
 
@@ -13,6 +13,244 @@ Question: does Sonnet agree with the v9 rules on its own, or did it only defer t
 - A result none of the three covers (for example cost below v9 scripted with another condition failed) is reported as covered by no reading, with its numbers.
 
 **Agreement** is the share of building-hours where the model's action is within the 0.10.0 tolerances (0.002 for cooling, 0.005 for the tank and battery) of the v9 strategy's action for the same state (`shadow_strategy`, worked out in code every hour and never sent to the model). Measured per device (cooling, dhw, battery) on the model's own reply, `null` counting as `baseline_action` on either side, and an `end_trim` counting as a cooling disagreement (the strategy never ends a trim early). Overall agreement is the share of building-hours where all three devices agree. Building-hours whose reply was unusable (no reply, or one the envelope's parse rejected) are left out of the shares and counted separately.
+
+**Order of work, in git:**
+- **f304b45 (14:42:57 EST):** the rule and readings above.
+- **e869285 (14:50:14 EST):** the version 11 build and its tests.
+- **The smoke test:** started at 14:50:23 EST, 9 seconds after the build commit.
+- **The Sonnet pilot:** started at 14:51:32 EST. **The Haiku control:** started at 15:16:50 EST.
+
+**Smoke test:** 24 hours of tuning July, Sonnet v11, $0.1620. That puts a full month at about $5.02 (0.1620 / 24 x 743), under the $7.00 stop line, so the pilot ran on its planned $7.00 budget. The pilot then cost $4.8587.
+
+**Pilot result: fails.** Sonnet v11 on tuning July, against v9 scripted on the same month, at six decimals:
+- **cost_total:** 0.945797 against 0.919906, +0.025891. Not below: **fails**.
+- **carbon_emissions_total:** +0.042139. More than +0.001: **fails**.
+- **discomfort_proportion:** +0.013333. **Fails**.
+- **discomfort_hot_proportion:** +0.000457. At most +0.001: passes.
+- **daily_peak_average:** +0.074785. More than +0.005: **fails**.
+- **all_time_peak_average:** +0.155544. **Fails**.
+
+**Which pre-registered reading applies: the third.** It fails on cost by 0.025891, more than 0.002, and agreement is under 80 percent on two devices (cooling 68.9, battery 54.8). Either alone puts it in the third reading: the rules carry knowledge Sonnet does not find on its own, and its 0.13.0 deference was justified.
+
+The holdout is spent, and tuning July is a month the strategy's numbers were chosen on, which favors the strategy.
+
+**Agreement with the v9 strategy** (`shadow_strategy`, the same state every hour; 2,229 building-hours per run, no unusable replies in either):
+
+| Device | Sonnet v11 | Haiku v11 |
+|---|---|---|
+| cooling (within 0.002) | 68.9% (1,535) | 64.3% (1,433) |
+| dhw (within 0.005) | 97.3% (2,168) | 98.9% (2,204) |
+| battery (within 0.005) | 54.8% (1,222) | 59.0% (1,314) |
+| all three at once | 37.8% (842) | 38.3% (854) |
+
+Tuning July, every controller (`hyperbolic months`; scripted rows are not model results):
+
+**cost_total**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.080094 |
+| v9 scripted | 0.919906 |  |
+| Sonnet v10 (0.13.0) | 0.920084 | +0.000178 |
+| **Sonnet v11** | **0.945797** | +0.025891 |
+| Haiku v10 (0.13.0) | 0.937295 | +0.017389 |
+| **Haiku v11** | **0.992758** | +0.072852 |
+
+**carbon_emissions_total**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.029692 |
+| v9 scripted | 0.970308 |  |
+| Sonnet v10 (0.13.0) | 0.970509 | +0.000201 |
+| **Sonnet v11** | **1.012447** | +0.042139 |
+| Haiku v10 (0.13.0) | 0.977213 | +0.006905 |
+| **Haiku v11** | **1.014709** | +0.044401 |
+
+**electricity_consumption_total**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.028296 |
+| v9 scripted | 0.971704 |  |
+| Sonnet v10 (0.13.0) | 0.971906 | +0.000202 |
+| **Sonnet v11** | **1.010680** | +0.038976 |
+| Haiku v10 (0.13.0) | 0.978002 | +0.006298 |
+| **Haiku v11** | **1.014323** | +0.042619 |
+
+**discomfort_proportion**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 0.064481 | +0.057186 |
+| v9 scripted | 0.007295 |  |
+| Sonnet v10 (0.13.0) | 0.007752 | +0.000457 |
+| **Sonnet v11** | **0.020628** | +0.013333 |
+| Haiku v10 (0.13.0) | 0.016970 | +0.009675 |
+| **Haiku v11** | **0.062652** | +0.055357 |
+
+**too cool (discomfort_cold_proportion)**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 0.061374 | +0.055669 |
+| v9 scripted | 0.005705 |  |
+| Sonnet v10 (0.13.0) | 0.006162 | +0.000457 |
+| **Sonnet v11** | **0.018581** | +0.012876 |
+| Haiku v10 (0.13.0) | 0.015380 | +0.009675 |
+| **Haiku v11** | **0.059545** | +0.053840 |
+
+**too warm (discomfort_hot_proportion)**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 0.003107 | +0.001517 |
+| v9 scripted | 0.001590 |  |
+| Sonnet v10 (0.13.0) | 0.001590 | +0.000000 |
+| **Sonnet v11** | **0.002047** | +0.000457 |
+| Haiku v10 (0.13.0) | 0.001590 | +0.000000 |
+| **Haiku v11** | **0.003107** | +0.001517 |
+
+**ramping_average**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.031948 |
+| v9 scripted | 0.968052 |  |
+| Sonnet v10 (0.13.0) | 0.968498 | +0.000446 |
+| **Sonnet v11** | **1.082070** | +0.114018 |
+| Haiku v10 (0.13.0) | 1.023865 | +0.055813 |
+| **Haiku v11** | **1.039499** | +0.071447 |
+
+**daily_peak_average**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.114969 |
+| v9 scripted | 0.885031 |  |
+| Sonnet v10 (0.13.0) | 0.885031 | +0.000000 |
+| **Sonnet v11** | **0.959816** | +0.074785 |
+| Haiku v10 (0.13.0) | 0.878873 | -0.006158 |
+| **Haiku v11** | **0.975590** | +0.090559 |
+
+**all_time_peak_average**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.155520 |
+| v9 scripted | 0.844480 |  |
+| Sonnet v10 (0.13.0) | 0.844480 | +0.000000 |
+| **Sonnet v11** | **1.000024** | +0.155544 |
+| Haiku v10 (0.13.0) | 0.848802 | +0.004322 |
+| **Haiku v11** | **1.000024** | +0.155544 |
+
+**daily_one_minus_load_factor_average**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 1.000000 | +0.048177 |
+| v9 scripted | 0.951823 |  |
+| Sonnet v10 (0.13.0) | 0.951609 | -0.000214 |
+| **Sonnet v11** | **0.980215** | +0.028392 |
+| Haiku v10 (0.13.0) | 0.940654 | -0.011169 |
+| **Haiku v11** | **0.976418** | +0.024595 |
+
+**power_outage_normalized_unserved_energy_total**
+
+| Controller | tuning July | against v9 scripted |
+|---|---|---|
+| baseline | 0.000000 | +0.000000 |
+| v9 scripted | 0.000000 |  |
+| Sonnet v10 (0.13.0) | 0.000000 | +0.000000 |
+| **Sonnet v11** | **0.000000** | +0.000000 |
+| Haiku v10 (0.13.0) | 0.000000 | +0.000000 |
+| **Haiku v11** | **0.000000** | +0.000000 |
+
+**Hours and model cost**
+
+| Controller | clamped hours | fallback hours | model cost |
+|---|---|---|---|
+| baseline | 0 | 0 | none |
+| v9 scripted | 10 | 0 | none |
+| Sonnet v10 (0.13.0) | 10 | 2 | $5.3566 |
+| **Sonnet v11** | 38 | 0 | $4.8587 |
+| Haiku v10 (0.13.0) | 8 | 159 | $0.3831 |
+| **Haiku v11** | 63 | 0 | $0.2698 |
+- **Sonnet v11 is behind v9 scripted on every KPI**, with unserved energy tied at 0 (no outage on this month). It is behind Sonnet v10 on every KPI too.
+- **Sonnet v11 against the baseline:** ahead on cost (0.9458), discomfort (0.0206 against 0.0645), too cool, too warm (0.0020 against 0.0031), the daily peak (0.9598) and load factor (0.9802). **Behind the baseline on emissions (1.0124), grid import (1.0107), ramping (1.0821) and the all-time peak (1.000024, the baseline's peak plus 0.000024).**
+- **Haiku v11 against the baseline:** ahead on cost (0.9928), discomfort (0.0627 against 0.0645), too cool, the daily peak (0.9756) and load factor (0.9764); level on too warm. **Behind on emissions (1.0147), grid import (1.0143), ramping (1.0395) and the all-time peak (1.000024).**
+- **Haiku v11 against Sonnet v11:** behind on cost, emissions, grid import, discomfort, too cool, too warm and the daily peak; ahead on ramping (1.0395 against 1.0821) and load factor (0.9764 against 0.9802); level on the all-time peak. Haiku v11 is behind Haiku v10 on every KPI except unserved energy.
+- **Neither blind run had a fallback hour.** Every reply in both runs parsed; the clamps rose to 38 hours (Sonnet) and 63 (Haiku) against v9 scripted's 10.
+- **What blind Sonnet did:** it kept cooling at the baseline in most hours, so it started no trim in 585 building-hours where the strategy trims, and it charged batteries in 258 building-hours where the strategy holds. It skipped or cut 163 building-hours of peak shaving, though the observation still carries `peak.shave_now`.
+- **Did Sonnet pre-cool?** 26 building-hours in 25 hours are cooling above the strategy before the day's top-price hours, 0.074 above it on average. Its hourly reasons in those hours mostly say it keeps baseline cooling or cools a warm room; one reason in the whole month mentions pre-cooling. That class lost $0.14 and added 2.03 kg. Haiku did the same in 11 building-hours (+$0.05).
+
+**Attribution** (`scripts/analyze_free_mode.py`, now also for blind mode). Each departure from the shadow strategy is sorted into the 0.13.0 classes, put back to the strategy's action and the month resimulated with zero model calls. + means the departures made it worse. Each control replay reproduces its run's KPIs exactly, and putting every departure back reproduces v9 scripted exactly ($75.8602 and 1,038.712 kg) on both runs. The logged `shadow_strategy` matches the strategy worked out again on every recorded observation, all 743 hours of each run.
+
+Sonnet v11 (tuning July):
+
+| Departures from the shadow strategy (building-hours, hours) | $ | kg CO2 | cost | emissions | discomfort | ramping | daily peak | all-time peak |
+|---|---|---|---|---|---|---|---|---|
+| `precool`: cooled above the strategy before the day's top-price hours (26, 25) | +0.14 | +2.03 | +0.0021 | +0.0023 | +0.0000 | +0.0022 | -0.0001 | +0.0000 |
+| `trim_not_started`: no trim in an occupied, overcooled room where the strategy trims (585, 506) | +2.18 | +27.73 | +0.0229 | +0.0225 | +0.0148 | -0.0142 | +0.0109 | +0.0103 |
+| `trim_shallower`: a shallower trim than the strategy's (36, 31) | +0.04 | +0.24 | +0.0004 | +0.0002 | +0.0000 | +0.0003 | +0.0000 | +0.0000 |
+| `trim_deeper`: a deeper trim than the strategy's (29, 23) | -0.16 | -1.69 | -0.0017 | -0.0013 | -0.0037 | +0.0011 | -0.0030 | +0.0000 |
+| `extra_cooling`: cooled above the strategy at any other time (5, 5) | +0.02 | +0.19 | +0.0004 | +0.0003 | +0.0000 | -0.0000 | +0.0000 | +0.0000 |
+| `warm_skipped`: less than the strategy's extra cooling in a warm room (18, 18) | -0.02 | -0.27 | -0.0003 | -0.0003 | +0.0010 | +0.0001 | -0.0003 | +0.0000 |
+| `top_discharge_short`: discharged less than the strategy in a top-price hour (36, 26) | +0.05 | +0.34 | +0.0007 | +0.0003 | +0.0000 | +0.0020 | -0.0002 | +0.0000 |
+| `top_discharge_over`: discharged more than the strategy in a top-price hour (142, 58) | -0.03 | +7.67 | +0.0005 | +0.0090 | +0.0000 | +0.0301 | -0.0047 | +0.0000 |
+| `shave_skipped`: skipped or cut a peak-shaving discharge (163, 59) | -1.22 | +5.46 | -0.0156 | +0.0060 | +0.0000 | +0.1014 | +0.0747 | +0.2043 |
+| `charge_skipped`: charged less than the strategy in a charging hour (303, 133) | -0.01 | -0.07 | -0.0001 | -0.0000 | +0.0000 | +0.0077 | -0.0043 | +0.0000 |
+| `charge_over`: charged more than the strategy in a charging hour (74, 27) | -0.19 | +1.95 | -0.0025 | +0.0020 | +0.0000 | +0.0124 | +0.0015 | +0.0000 |
+| `charge_off_plan`: charged when the strategy holds or only stores solar (258, 100) | -1.81 | +10.34 | -0.0231 | +0.0109 | +0.0000 | -0.0046 | -0.0153 | +0.0000 |
+| `discharge_off_plan`: discharged when the strategy does not (31, 31) | +0.07 | +1.00 | +0.0007 | +0.0008 | +0.0000 | +0.0034 | +0.0000 | +0.0000 |
+| `dhw_used`: used the hot water tank (the strategy leaves it at 0) (61, 21) | +0.46 | +7.24 | +0.0056 | +0.0068 | +0.0000 | +0.0112 | +0.0000 | +0.0000 |
+| `small`: differed from the strategy by less than the 0.10.0 class tolerances (3357, 731) | +0.00 | +0.04 | +0.0000 | +0.0000 | +0.0000 | +0.0002 | +0.0000 | +0.0000 |
+| **Every departure** | +2.32 | +46.20 | +0.0259 | +0.0421 | +0.0133 | +0.1140 | +0.0748 | +0.1555 |
+
+
+Haiku v11 (tuning July):
+
+| Departures from the shadow strategy (building-hours, hours) | $ | kg CO2 | cost | emissions | discomfort | ramping | daily peak | all-time peak |
+|---|---|---|---|---|---|---|---|---|
+| `precool`: cooled above the strategy before the day's top-price hours (11, 9) | +0.05 | +0.79 | +0.0007 | +0.0008 | +0.0000 | +0.0005 | +0.0000 | +0.0000 |
+| `trim_not_started`: no trim in an occupied, overcooled room where the strategy trims (740, 582) | +3.59 | +45.92 | +0.0374 | +0.0371 | +0.0538 | -0.0140 | +0.0200 | +0.0014 |
+| `trim_shallower`: a shallower trim than the strategy's (5, 5) | +0.01 | +0.18 | +0.0001 | +0.0001 | +0.0000 | +0.0000 | +0.0000 | +0.0000 |
+| `trim_deeper`: a deeper trim than the strategy's (3, 2) | -0.04 | -0.30 | -0.0004 | -0.0002 | +0.0000 | +0.0011 | +0.0000 | +0.0000 |
+| `trim_unwanted`: a trim where the strategy has none (3, 3) | -0.01 | -0.21 | -0.0001 | -0.0002 | +0.0000 | +0.0004 | +0.0000 | +0.0000 |
+| `extra_cooling`: cooled above the strategy at any other time (1, 1) | +0.00 | +0.00 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | +0.0000 |
+| `warm_skipped`: less than the strategy's extra cooling in a warm room (37, 37) | -0.04 | -0.51 | -0.0005 | -0.0005 | +0.0015 | +0.0001 | -0.0004 | +0.0000 |
+| `top_discharge_short`: discharged less than the strategy in a top-price hour (171, 61) | +1.99 | +3.17 | +0.0271 | +0.0030 | +0.0000 | -0.0255 | +0.0041 | +0.0000 |
+| `top_discharge_over`: discharged more than the strategy in a top-price hour (16, 10) | -0.02 | +0.59 | -0.0002 | +0.0008 | +0.0000 | +0.0059 | -0.0019 | +0.0000 |
+| `shave_skipped`: skipped or cut a peak-shaving discharge (167, 58) | -0.09 | +3.65 | -0.0017 | +0.0033 | +0.0000 | +0.0593 | +0.0842 | +0.1793 |
+| `charge_skipped`: charged less than the strategy in a charging hour (313, 148) | +0.09 | +0.13 | +0.0013 | +0.0002 | +0.0000 | +0.0082 | -0.0005 | +0.0000 |
+| `charge_over`: charged more than the strategy in a charging hour (25, 12) | +0.02 | +0.17 | +0.0002 | +0.0001 | +0.0000 | +0.0020 | +0.0000 | +0.0000 |
+| `charge_off_plan`: charged when the strategy holds or only stores solar (182, 76) | +0.22 | +4.71 | +0.0029 | +0.0045 | +0.0000 | +0.0250 | -0.0049 | +0.0000 |
+| `discharge_off_plan`: discharged when the strategy does not (41, 31) | +0.17 | +2.76 | +0.0023 | +0.0030 | +0.0000 | +0.0199 | -0.0001 | +0.0000 |
+| `dhw_used`: used the hot water tank (the strategy leaves it at 0) (25, 12) | +0.26 | +3.87 | +0.0031 | +0.0035 | +0.0000 | +0.0020 | +0.0000 | +0.0000 |
+| `small`: differed from the strategy by less than the 0.10.0 class tolerances (2875, 722) | -0.00 | -0.00 | -0.0000 | -0.0000 | +0.0000 | +0.0001 | +0.0000 | +0.0000 |
+| **Every departure** | +6.27 | +53.52 | +0.0729 | +0.0444 | +0.0554 | +0.0714 | +0.0906 | +0.1555 |
+- **What made money for Sonnet:** off-plan grid charging (-$1.81) and skipped or cut shaves (-$1.22), then extra charging (-$0.19), deeper trims (-$0.16) and three classes under $0.05. **Both large ones cost elsewhere:** the off-plan charging added 10.34 kg (+0.0109 emissions), and the skipped shaves added 0.2043 to the all-time peak, 0.0747 to the daily peak, 0.1014 to ramping and 5.46 kg.
+- **What lost money for Sonnet:** trims not started (+$2.18, and +0.0148 discomfort, more than its whole +0.0133), the hot water tank (+$0.46), pre-cooling (+$0.14), off-plan discharges (+$0.07), short top-price discharges (+$0.05), shallower trims (+$0.04) and extra cooling (+$0.02).
+- **The classes do not add up to the whole.** Sonnet's classes sum to -$0.48 while every departure together costs +$2.32: each class is measured with all its other departures in place, and the battery classes share the same charge.
+- **For Haiku**, trims not started (+$3.59, +0.0538 discomfort) and short top-price discharges (+$1.99) lost the most. Five classes made a little: skipped shaves (-$0.09, with +0.1793 on the all-time peak), deeper trims (-$0.04), less warm-room cooling (-$0.04), more top-price discharge (-$0.02) and unwanted trims (-$0.01).
+- **In dollars over the month** (CityLearn's hourly cost summed over the buildings): v9 scripted $75.86 and 1,038.7 kg, Sonnet v11 $78.18 and 1,084.9 kg, Haiku v11 $82.13 and 1,092.2 kg.
+
+**Spend: $5.2905 for this release, $11.2096 of the $15.00 cap overall.** Smoke test $0.1620, Sonnet pilot $4.8587, Haiku control $0.2698 (run because the running total plus $1.50 stayed under $15.00). Per call, Sonnet averaged 2,352 uncached input tokens, 2,144 cached and 162 output; Haiku 2,351, 2,141 and 213. The cache hit rate was 48 percent for both. Every run replays every hour with 0 API calls (24, 743, 743), and every earlier recorded run on disk (31) still replays.
+
+Changes:
+
+- **Prompt version 11, blind mode** (`--prompt-version 11`; the default stays 9):
+  - **Observation:** exactly the version 10 observation with `suggestion` and `suggestion_reason` removed. The solar forecast and the building ratings stay, and so does `peak.shave_now`, a true or false the strategy's own shave share (0.9 of the forecast peak) decides; the prompt names it without its threshold.
+  - **System prompt:** the version 10 prompt without the free mode paragraph, the `deviation_reason` rules and the strategy section. It says plainly that `null` means `baseline_action`, and prints no strategy rule, threshold or `StrategyParamsV9` number; a test traces every number it prints to the envelope, the forecasts, the reply rules, the district or the dataset.
+  - **Reply:** the envelope's standard schema with `end_trim`, no `deviation_reason`.
+  - **Shadow strategy:** every hour the v9 strategy's reply for the same observation is worked out in code and logged in the step record as `shadow_strategy`. It is never sent, and replay checks it.
+  - **Scripted:** scripted version 11 sends the shadow strategy and matches scripted v9 action for action.
+- **`scripts/analyze_free_mode.py`:** blind-mode runs are measured against their shadow strategy, checked against the log, and get the agreement measure; free-mode runs are analyzed as before.
+- **Unchanged:** the envelope (`envelope.py` byte for byte, pinned by hash), the v9 strategy and every tuned number. The system prompts and reply schemas of versions 1 to 10 are pinned by hash and unchanged. The published viewer still shows the 0.10.0 phase 2 run, and its data is unchanged.
+- **Tests:**
+  - **Version 11:** the schema, no request (system prompt, observation or schema) containing "suggestion", "strategy" or `deviation_reason` on any hour, no strategy number in the system prompt and the prompt unchanged when `StrategyParamsV9` changes, the observation equal to version 10's without the suggestion and independent of `StrategyParamsV9` except `peak.shave_now`, `shadow_strategy` equal to `strategy_plan_v9` exactly every hour, scripted v11 equal to scripted v9 on the fake district and on 24 hours of CityLearn, a changed shadow caught on replay.
+  - **Nothing earlier changes:** the envelope hash, the version 10 prompt and schema hashes, scripted v10 still equal to v9, the fixture runs and the three 0.13.0 runs replaying.
+  - **The analysis script:** the blind reference equal to the shadow, agreement per device (unusable replies left out, `end_trim` counted against cooling), a changed shadow log caught, and on CityLearn the control reproducing a blind run and every departure put back equal to the strategy.
 
 ## 0.13.0 (2026-11-10)
 

@@ -1,6 +1,16 @@
-"""Where a free-mode (prompt version 10) run left its suggestion, and what each departure was worth (0.13.0).
+"""Where a free-mode (prompt version 10) run left its suggestion, and what each departure was worth (0.13.0);
+from 0.14.0 the same for a blind-mode (prompt version 11) run against its shadow strategy, with agreement.
 
     python scripts/analyze_free_mode.py RUN_DIR [--jobs N] [--out FILE]
+
+Blind mode (0.14.0). A version 11 run shows the model no suggestion. Its reference is the version 9
+strategy's action for the same observation, which the run logs every hour as shadow_strategy; here it
+is worked out again from each recorded observation and checked against the log, so "suggestion" below
+means the shadow strategy. There is no deviation_reason, so no hour is rejected for a missing one and
+every departure has no reason. Agreement is the share of building-hours whose action is within the
+0.10.0 tolerances of the shadow strategy, per device and with all three devices at once, over the
+building-hours whose reply parsed (null counts as baseline_action; an end_trim counts as a cooling
+disagreement). It is the measure the 0.14.0 acceptance rule's readings use.
 
 Deviations. Every hour, building and device of the recorded reply is compared with the suggestion the
 model saw (the version 9 strategy's action, shown in the observation), with the 0.10.0 tolerances
@@ -56,10 +66,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from analyze_deviations import CLASSES as BASE_CLASSES  # noqa: E402
-from analyze_deviations import classify, context, month_schema_for  # noqa: E402
+from analyze_deviations import COOLING_TOL, STORAGE_TOL, classify, context, month_schema_for  # noqa: E402
 from evaluate_hold import KPI_KEYS  # noqa: E402
 
-from hyperbolic.envelope import DEVICE_KEYS, Envelope, EnvelopeConfig  # noqa: E402
+from hyperbolic.envelope import DEVICE_KEYS, Envelope, EnvelopeConfig, parse_reply  # noqa: E402
 from hyperbolic.model import (  # noqa: E402
     Budget,
     CallResult,
@@ -67,7 +77,7 @@ from hyperbolic.model import (  # noqa: E402
     ScriptedSupervisor,
     observation_from_request,
 )
-from hyperbolic.prompt import FREE_MODE_FROM, differing_devices  # noqa: E402
+from hyperbolic.prompt import FREE_MODE_FROM, differing_devices, shadow_strategy  # noqa: E402
 from hyperbolic.runner import AgentController, NullWriter, load_jsonl, run_session  # noqa: E402
 
 CLASSES = {"precool": ("cooling", "cooled above the suggestion before the day's top-price hours"),
@@ -85,11 +95,76 @@ CLAIMS = {
 }
 
 
-def suggestion_of(obs: dict) -> dict:
+def is_blind(obs: dict) -> bool:
+    """A version 11 (blind mode) observation: version 10's fields without the suggestion."""
     first = next(iter(obs["buildings"].values()))
-    if "suggestion" not in first:
-        raise ValueError("this needs a prompt version 10 (free mode) run")
-    return {b: s["suggestion"] for b, s in obs["buildings"].items()}
+    return "suggestion" not in first and "cooling_power_kw" in first
+
+
+def suggestion_of(obs: dict) -> dict:
+    """The reference each building is measured against: the suggestion shown in a version 10 observation,
+    or for a version 11 observation the shadow strategy (the version 9 strategy) worked out on it."""
+    first = next(iter(obs["buildings"].values()))
+    if "suggestion" in first:
+        return {b: s["suggestion"] for b, s in obs["buildings"].items()}
+    if is_blind(obs):
+        plan = shadow_strategy(obs)
+        return {b: {d: plan[b][d] for d in DEVICE_KEYS} for b in obs["buildings"]}
+    raise ValueError("this needs a prompt version 10 (free mode) or 11 (blind mode) run")
+
+
+def check_shadow(run_dir: Path) -> int:
+    """For a blind-mode run, that the shadow_strategy logged each hour equals the version 9 strategy worked
+    out again on that hour's recorded observation. Returns the hours checked (0 for a free-mode run)."""
+    steps = {s["step"]: s for s in load_jsonl(run_dir / "steps.jsonl")}
+    checked = 0
+    for rec in load_jsonl(run_dir / "calls.jsonl"):
+        obs = observation_from_request(rec["request"])
+        if not is_blind(obs):
+            return 0
+        if steps[rec["step"]].get("shadow_strategy") != json.loads(json.dumps(shadow_strategy(obs))):
+            raise ValueError(f"hour {rec['step']}: the logged shadow_strategy is not the strategy on its observation")
+        checked += 1
+    return checked
+
+
+def _close(a: float, s: float, tol: float) -> bool:
+    return abs(a - s) <= tol + 1e-9
+
+
+def agreement(run_dir: Path) -> dict:
+    """Share of building-hours whose action is within the 0.10.0 tolerances (COOLING_TOL for cooling,
+    STORAGE_TOL for the tank and battery) of the reference (the shadow strategy in blind mode), per device
+    and with all three at once. null counts as baseline_action on either side, and an end_trim is a
+    cooling disagreement. Building-hours whose reply was unusable (no reply, or one the envelope's parse
+    rejected) are left out and counted."""
+    tol = {"cooling": COOLING_TOL, "dhw": STORAGE_TOL, "battery": STORAGE_TOL}
+    agree = collections.Counter()
+    total = unusable = 0
+    for rec in load_jsonl(run_dir / "calls.jsonl"):
+        obs = observation_from_request(rec["request"])
+        names = tuple(obs["buildings"])
+        proposal, err = parse_reply(rec["reply"].get("text"), names, end_trim=True)
+        if err is not None:
+            unusable += len(names)
+            continue
+        ref = suggestion_of(obs)
+        for b in names:
+            base = obs["buildings"][b]["baseline_action"]
+            mine = proposal["buildings"][b]
+            ok = {}
+            for d in DEVICE_KEYS:
+                a = base[d] if mine.get(d) is None else mine[d]
+                s = base[d] if ref[b].get(d) is None else ref[b][d]
+                ok[d] = (a is None and s is None) or (a is not None and s is not None and _close(a, s, tol[d]))
+            if (proposal.get("end_trim") or {}).get(b) is not None:
+                ok["cooling"] = False
+            total += 1
+            for d in DEVICE_KEYS:
+                agree[d] += ok[d]
+            agree["all"] += all(ok.values())
+    share = {k: (agree[k] / total if total else None) for k in (*DEVICE_KEYS, "all")}
+    return {"building_hours": total, "unusable_building_hours": unusable, "agree": dict(agree), "share": share}
 
 
 def classify_v10(obs: dict, reply: dict) -> list[tuple[str, str]]:
@@ -105,15 +180,17 @@ def classify_v10(obs: dict, reply: dict) -> list[tuple[str, str]]:
 
 
 def deviations(run_dir: Path) -> list[dict]:
-    """Every departure in a recorded version 10 run, with its class, the model's and the suggestion's
-    values, when it happened and the model's deviation_reason for that building and hour."""
+    """Every departure in a recorded version 10 or 11 run, with its class, the model's and the reference's
+    values, when it happened and the model's deviation_reason for that building and hour (None in blind
+    mode). A blind-mode run's logged shadow_strategy is checked against its observations first."""
+    check_shadow(run_dir)
     rows = []
     for rec in load_jsonl(run_dir / "calls.jsonl"):
-        text = rec["reply"].get("text")
-        if not text:
+        reply = _reply_of(rec)
+        if reply is None:
             continue
         obs = observation_from_request(rec["request"])
-        reply, plan = json.loads(text), suggestion_of(obs)
+        plan = suggestion_of(obs)
         classed = [(b, cls, CLASSES[cls][0]) for b, cls in classify_v10(obs, reply)]
         covered = {(b, d) for b, _, d in classed}
         for b in sorted(obs["buildings"]):
@@ -127,6 +204,22 @@ def deviations(run_dir: Path) -> list[dict]:
                          "model": base if mine is None else float(mine), "suggestion": base if sug is None else float(sug),
                          "reason": reply[b].get("deviation_reason"), **context(obs, b)})
     return rows
+
+
+def _reply_of(rec: dict) -> dict | None:
+    """A recorded reply as a JSON object with every building an object, or None (no reply, not JSON, or a
+    building missing: the hour fell back, and there is no action of the model's to compare)."""
+    text = rec["reply"].get("text")
+    if not text:
+        return None
+    try:
+        reply = json.loads(text)
+    except ValueError:
+        return None
+    obs_buildings = observation_from_request(rec["request"])["buildings"]
+    if not isinstance(reply, dict) or not all(isinstance(reply.get(b), dict) for b in obs_buildings):
+        return None
+    return reply
 
 
 def raw_departures(sent: dict, suggestion: dict) -> list[str]:
@@ -143,14 +236,14 @@ def departures_of(run_dir: Path) -> set[tuple[int, str, str]]:
     """(step, building, device) of every raw departure in a recorded run, end_trim counted on cooling."""
     out = set()
     for rec in load_jsonl(run_dir / "calls.jsonl"):
-        text = rec["reply"].get("text")
-        if not text:
+        reply = _reply_of(rec)
+        if reply is None:
             continue
         obs = observation_from_request(rec["request"])
-        reply = json.loads(text)
-        for b, s in obs["buildings"].items():
+        ref = suggestion_of(obs)
+        for b in obs["buildings"]:
             acts = reply.get(b) or {}
-            for d in raw_departures(acts, s["suggestion"]):
+            for d in raw_departures(acts, ref[b]):
                 out.add((rec["step"], b, d))
             if acts.get("end_trim") is not None:
                 out.add((rec["step"], b, "cooling"))
@@ -159,13 +252,15 @@ def departures_of(run_dir: Path) -> set[tuple[int, str, str]]:
 
 def rejected_of(run_dir: Path) -> set[tuple[int, str]]:
     """(step, building) where the run's reply departed from the suggestion without a deviation_reason,
-    which the free-mode check rejected (that hour fell back)."""
+    which the free-mode check rejected (that hour fell back). Blind mode has no such check: always empty."""
     out = set()
     for rec in load_jsonl(run_dir / "calls.jsonl"):
         text = rec["reply"].get("text")
         if not text:
             continue
         obs = observation_from_request(rec["request"])
+        if is_blind(obs):
+            return set()
         try:
             reply = json.loads(text)
         except ValueError:
@@ -204,6 +299,10 @@ class PutBackSupervisor(RecordedReplySupervisor):
         except ValueError:
             return res
         obs = observation_from_request(request)
+        if not isinstance(reply, dict):
+            return res
+        ref = suggestion_of(obs)
+        blind = is_blind(obs)
         for b, ob in obs["buildings"].items():
             acts = reply.get(b)
             if not isinstance(acts, dict):
@@ -211,11 +310,12 @@ class PutBackSupervisor(RecordedReplySupervisor):
             kept = {d for d in DEVICE_KEYS if (step, b, d) in self.departures and (step, b, d) not in self.replace}
             for d in DEVICE_KEYS:
                 if d not in kept:
-                    acts[d] = ob["suggestion"][d]
+                    acts[d] = ref[b][d]
             if "cooling" not in kept:
                 acts["end_trim"] = None
-            if (step, b) not in self.rejected and acts.get("deviation_reason") is None and \
-                    differing_devices(acts, ob["suggestion"], ob["baseline_action"], acts.get("end_trim")):
+            # Blind mode has no deviation_reason: its schema allows none, so nothing is added.
+            if not blind and (step, b) not in self.rejected and acts.get("deviation_reason") is None and \
+                    differing_devices(acts, ref[b], ob["baseline_action"], acts.get("end_trim")):
                 acts["deviation_reason"] = PLACEHOLDER
         res.text = json.dumps(reply)
         return res
@@ -316,6 +416,9 @@ def report(run_dir: Path, rows: list[dict], results: dict) -> dict:
             "sample_reasons": [x["reason"] for x in mine if x["reason"]][:5],
             "when": {k: dict(collections.Counter(x[k] for x in mine).most_common()) for k in ("price", "building")},
         }
+    if "all" in results:
+        out["all_equals_strategy"] = (results["all"]["kpis"] == results["strategy"]["kpis"]
+                                      and results["all"]["usd"] == results["strategy"]["usd"])
     for name in ("all", "rejected hours", "reasoned"):
         if name in results:
             r = results[name]
@@ -342,6 +445,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{cls:<22}{c['building_hours']:>8}{c['worth_usd']:>+10.2f}{k['cost_total']:>+10.4f}"
               f"{k['carbon_emissions_total']:>+10.4f}{k['discomfort_proportion']:>+10.4f}{k['ramping_average']:>+10.4f}"
               f"{k['daily_peak_average']:>+10.4f}{k['all_time_peak_average']:>+10.4f}")
+    for name in ("all", "rejected hours", "reasoned"):
+        if name in rep:
+            k = rep[name]["worth_kpi"]
+            print(f"{name:<22}{'':>8}{rep[name]['worth_usd']:>+10.2f}{k['cost_total']:>+10.4f}"
+                  f"{k['carbon_emissions_total']:>+10.4f}{k['discomfort_proportion']:>+10.4f}{k['ramping_average']:>+10.4f}"
+                  f"{k['daily_peak_average']:>+10.4f}{k['all_time_peak_average']:>+10.4f}")
+    if "all" in rep:
+        same = rep["all_equals_strategy"]
+        print(f"every departure put back equals the strategy run: {'yes' if same else 'NO'}")
+    shadow_hours = check_shadow(args.run_dir)
+    agr = agreement(args.run_dir)
+    rep["agreement"] = agr
+    if shadow_hours:
+        print(f"shadow_strategy matches the strategy on every recorded observation ({shadow_hours} hours)")
+    print(f"agreement over {agr['building_hours']} building-hours ({agr['unusable_building_hours']} unusable left out): "
+          + ", ".join(f"{k} {100 * v:.1f}%" for k, v in agr["share"].items() if v is not None))
     if args.out:
         args.out.write_text(json.dumps({"rows": rows, "report": rep}, indent=2), encoding="utf-8")
         print(f"written to {args.out}")
