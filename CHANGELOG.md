@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.0 (unreleased)
+
+Question: is the value of the v9 strategy in the rules themselves, or in working them out in code? Prompt version 12 ("rules in words") is the version 11 observation, with no suggestion, and the version 11 system prompt plus the version 10 strategy section (the three numbered rules with their `StrategyParamsV9` numbers), worded as an instruction to apply that strategy every hour. Haiku only. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
+
+**Runs, all on tuning July (`tuning-07`):** Haiku (`claude-haiku-5-5`) v11 (blind, done in 0.14.0), Haiku v12 (rules in words, new), Haiku v9 (rules worked out in code and shown as `strategy`, new), and v9 scripted.
+
+**How the result is read, pre-registered, written before any code change or live call and not changed after.** Each run's `cost_total` is taken against v9 scripted's on the same month, at CityLearn's six decimals:
+- **Haiku v12 within 0.002 of Haiku v9:** the rules in words carry the value, and computing them in code adds nothing measurable for this model.
+- **Haiku v12 closer to Haiku v11 than to Haiku v9:** Haiku cannot carry out the rules from words; the value needs the computation.
+- **Anything between:** the words carry part of it, and the gap is what the computation adds.
+- A result none of the three covers (for example Haiku v12 more than 0.002 below Haiku v9) is reported as covered by no reading, with its numbers.
+
+**Agreement** with `shadow_strategy` per device is reported for Haiku v11 and Haiku v12, the same measure as 0.14.0: the share of building-hours where the model's action is within 0.002 (cooling) or 0.005 (tank and battery) of the v9 strategy's action for the same state, `null` counting as `baseline_action` on either side, an `end_trim` counting as a cooling disagreement, and unusable replies left out and counted separately.
+
 ## 0.14.0 (2026-11-10)
 
 Question: does Sonnet agree with the v9 rules on its own, or did it only defer to them in 0.13.0 because they were handed to it? Prompt version 11 ("blind mode") is the version 10 observation without the suggestion, and a system prompt with no strategy rules or numbers. Same month as 0.13.0, same envelope. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
