@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.12.0 (2026-11-10)
+
+Goal: publish the one final scoring of the sealed holdout (`HOLDOUT.md`): Buildings 4, 5 and 6 of `citylearn_challenge_2023_phase_3_1`, June, July and August, each its own episode, with prompt version 9 and the 0.11.0 envelope exactly as shipped. Nothing in the strategy, the prompt, the envelope or any tuned number changes in this release, and it makes no model calls.
+
+**Seal check:** passed. All 16 files in `holdout/citylearn_challenge_2023_phase_3_1` match the sha256 hashes in `HOLDOUT.md` (the same table the code checks), with no extra file.
+
+**When the live months ran.** The live months (`claude-haiku-5-5`, prompt version 9, $2.00 budget each) were each run once on 2026-10-23: `holdout-06` run 20261023T212209Z, `holdout-07` 20261023T215850Z, `holdout-08` 20261023T223522Z, between 17:22 and 19:11 EDT. That was after the 0.11.0 commits, and they were scored with `--holdout-final` that evening but not published until this release. The 0.11.0 entry's line that only the baseline had been run on the holdout was true when it was written. No holdout month has been run live a second time. The only code change since is prompt caching, which wraps the same system prompt text as a cached block and is off for these runs; `envelope.py` is unchanged and the shipped envelope equals each run's recorded envelope.
+
+**Replay check:** every live month replays all its hours with 0 API calls (719 of 719, 743 of 743, 743 of 743), every rebuilt request matching the recorded request's sha256, and the replayed district KPIs equal the recorded ones. The baseline (run offline here; no recorded holdout baseline folder existed), the 0.4.0 rule-based controller and v9 scripted, run again with `hyperbolic months --holdout-final`, equal the 2026-10-23 scoring to six decimals.
+
+Every holdout month (`hyperbolic months --holdout-final --run`; scripted rows are not model results):
+
+| CityLearn KPI (district) | | holdout June | holdout July | holdout August | mean of three |
+|---|---|---|---|---|---|
+| cost_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 0.9689 | 0.9728 | 0.9776 | 0.9731 |
+|  | v9 scripted | 0.9203 | 0.9215 | 0.9270 | 0.9229 |
+|  | **Haiku v9** | **0.9205** | **0.9215** | **0.9271** | **0.9231** |
+| carbon_emissions_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 0.9974 | 0.9986 | 0.9993 | 0.9984 |
+|  | v9 scripted | 0.9540 | 0.9551 | 0.9536 | 0.9542 |
+|  | **Haiku v9** | **0.9543** | **0.9551** | **0.9538** | **0.9544** |
+| electricity_consumption_total | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 1.0019 | 1.0003 | 1.0022 | 1.0015 |
+|  | v9 scripted | 0.9571 | 0.9562 | 0.9554 | 0.9562 |
+|  | **Haiku v9** | **0.9573** | **0.9562** | **0.9556** | **0.9564** |
+| discomfort_proportion | baseline | 0.1821 | 0.1024 | 0.1038 | 0.1294 |
+|  | 0.4.0 rule-based | 0.1826 | 0.1024 | 0.1038 | 0.1296 |
+|  | v9 scripted | 0.0427 | 0.0192 | 0.0219 | 0.0279 |
+|  | **Haiku v9** | **0.0427** | **0.0192** | **0.0219** | **0.0279** |
+| too cool (discomfort_cold_proportion) | baseline | 0.1392 | 0.1007 | 0.1009 | 0.1136 |
+|  | 0.4.0 rule-based | 0.1397 | 0.1007 | 0.1009 | 0.1138 |
+|  | v9 scripted | 0.0411 | 0.0192 | 0.0214 | 0.0273 |
+|  | **Haiku v9** | **0.0411** | **0.0192** | **0.0214** | **0.0273** |
+| too warm (discomfort_hot_proportion) | baseline | 0.0429 | 0.0017 | 0.0028 | 0.0158 |
+|  | 0.4.0 rule-based | 0.0429 | 0.0017 | 0.0028 | 0.0158 |
+|  | v9 scripted | 0.0015 | 0.0000 | 0.0005 | 0.0007 |
+|  | **Haiku v9** | **0.0015** | **0.0000** | **0.0005** | **0.0007** |
+| ramping_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 1.0449 | 1.0476 | 1.0528 | 1.0484 |
+|  | v9 scripted | 0.9874 | 0.9562 | 0.9658 | 0.9698 |
+|  | **Haiku v9** | **0.9865** | **0.9561** | **0.9661** | **0.9696** |
+| daily_peak_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 0.9832 | 0.9925 | 0.9959 | 0.9905 |
+|  | v9 scripted | 0.9136 | 0.9000 | 0.9287 | 0.9141 |
+|  | **Haiku v9** | **0.9137** | **0.9000** | **0.9286** | **0.9141** |
+| all_time_peak_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 1.0000 | 0.9799 | 1.0000 | 0.9933 |
+|  | v9 scripted | 0.9439 | 0.8387 | 0.8871 | 0.8899 |
+|  | **Haiku v9** | **0.9445** | **0.8390** | **0.8871** | **0.8902** |
+| daily_one_minus_load_factor_average | baseline | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+|  | 0.4.0 rule-based | 0.9868 | 0.9941 | 0.9972 | 0.9927 |
+|  | v9 scripted | 0.9688 | 0.9533 | 0.9799 | 0.9673 |
+|  | **Haiku v9** | **0.9686** | **0.9532** | **0.9795** | **0.9671** |
+| power_outage_normalized_unserved_energy_total | baseline | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+|  | 0.4.0 rule-based | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+|  | v9 scripted | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+|  | **Haiku v9** | **0.0000** | **0.0000** | **0.0000** | **0.0000** |
+| Clamped hours | baseline | 0 | 0 | 0 | 0.0 |
+|  | 0.4.0 rule-based | 1 | 0 | 0 | 0.3 |
+|  | v9 scripted | 10 | 10 | 3 | 7.7 |
+|  | **Haiku v9** | **10** | **11** | **3** | **8.0** |
+| Fallback hours | **Haiku v9** | **0** | **0** | **0** | **0.0** |
+| Model cost | **Haiku v9** | **$0.5187** | **$0.5351** | **$0.5331** | **$0.5290** |
+
+- **Haiku v9 beats the baseline on every KPI in every holdout month**, with unserved energy in outages tied at 0. No KPI comes in over the baseline. Mean of three: cost 0.9231, emissions 0.9544, grid import 0.9564, discomfort 0.0279 against 0.1294, too warm 0.0007 against 0.0158, ramping 0.9696, daily peak 0.9141, all-time peak 0.8902, load factor 0.9671.
+- **It beats the 0.4.0 rule-based controller on every KPI in every month**, with unserved energy tied at 0. The rule-based controller comes in over the baseline on ramping in every month (mean 1.0484), on grid import in every month (mean 1.0015), on discomfort and too cool in June (0.1826 against 0.1821, 0.1397 against 0.1392) and on the August all-time peak by 0.000002.
+- **It does not beat the v9 scripted strategy overall.** Within 0.0006 of it on every KPI in every month. It trails on cost in all three months (mean 0.923059 against 0.922944), emissions in June and August (mean +0.000147), grid import in all three (mean +0.000148), the all-time peak in June (+0.000561) and July (+0.000307) with August tied (mean +0.000289), the daily peak in June (+0.000036), ramping in August (+0.000299), and by one clamped hour in July (11 against 10). It is ahead on ramping in June and July (mean 0.969573 against 0.969817), the daily peak in July and August (mean 0.914118 against 0.914147) and load factor in all three (mean 0.967139 against 0.967328). Discomfort, too cool, too warm and unserved energy are identical to six decimals.
+- **The gap to the strategy is far smaller than in 0.10.0** (Haiku v8 against v8 scripted on the month set: mean cost +0.0035, mean all-time peak +0.0178; Haiku v9 against v9 scripted on the holdout: +0.0001 and +0.0003), on other buildings and another prompt, so not a like-for-like comparison.
+- **No outage happened.** The outage model is on in the holdout schema, but no hour of the three episodes has an outage flag: unserved energy is 0 for every controller and thermal resilience is not scored.
+- **Model cost:** 2,205 calls, 0 fallbacks, $1.5869 ($0.5187, $0.5351, $0.5331), each under its $2.00 cap and under $6.00 in all. Above the 0.11.0 estimate of $1.30 to $1.36: replies averaged 486 output tokens against 220 estimated (input 4,768 against 4,810).
+
+Changes:
+
+- README: a Holdout results section with the table and these statements, a pointer to it in the introduction, and two Honest limits updated (the holdout's run dates and missing outages; the agent adding nothing measurable over its strategy there).
+- The published viewer is unchanged and still shows the 0.10.0 phase 2 live run.
+- Version 0.12.0 (`pyproject.toml`, `hyperbolic/__init__.py`, `docs/assets/version.js`). No code, prompt, strategy, envelope or test changes.
+
 ## 0.11.0 (2026-10-23)
 
 Goal: close the gap between the 0.10.0 live agent and its strategy on the all-time peak (July 0.8822 against scripted v8 0.8491, August 0.8940 against 0.8570) and the daily peak, bring August ramping (1.0157, the one KPI over the baseline) down, and set up a clean holdout that nothing in this release is tuned on. The envelope does not change. No live model calls are made for this release.
