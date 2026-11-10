@@ -288,7 +288,9 @@ def build_parser() -> argparse.ArgumentParser:
                         f"{RULE_PROMPT_VERSION}, the 0.4.0 rule-based controller, while versions 4 and 5 "
                         "run their strategies literally, version 6 runs the version 5 strategy with the "
                         "trim hold, version 7 keeps it inside the ranges its observation shows, version 8 "
-                        "adds extra cooling in a warm room and version 9 keeps charge for the evening shave)")
+                        "adds extra cooling in a warm room and version 9 keeps charge for the evening shave; "
+                        "version 10, free mode, shows the version 9 strategy as a suggestion the model may "
+                        "depart from with a deviation_reason, and run scripted sends the suggestion)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")

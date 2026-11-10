@@ -281,6 +281,14 @@
       });
       li.appendChild(te);
     }
+    if (d.deviations && d.deviations.length) {
+      var dv = el("ul", "trim-ends");
+      d.deviations.forEach(function (v) {
+        dv.appendChild(el("li", "", v.building.replace("_", " ") + ": off suggestion (" +
+          (v.devices.length ? v.devices.join(", ") : "none") + "): " + v.reason));
+      });
+      li.appendChild(dv);
+    }
     ui.log.insertBefore(li, ui.log.firstChild);
     while (ui.log.childNodes.length > LOG_MAX) ui.log.removeChild(ui.log.lastChild);
   }

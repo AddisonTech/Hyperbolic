@@ -25,13 +25,14 @@ from . import district as dc
 
 KEY_ENV_VARS = ("HYPERBOLIC_ANTHROPIC_KEY", "TRIAGE_ANTHROPIC_KEY")
 
-# USD per million tokens. input is uncached input; a cache write (5 minute TTL) bills at 1.25x
-# the input price and a cache read at 0.1x.
+# USD per million tokens, Anthropic's published rates. input is uncached input; a cache write (5
+# minute TTL) bills at 1.25x the input price; a cache read at 0.1x on Haiku 5.5 and 0.05x on Sonnet 5.5.
+# Haiku 5.5's rates are for prompts up to 100,000 tokens, far above any request here.
 MODELS = {
     "haiku": {"id": "claude-haiku-5-5", "input_per_mtok": 0.10, "cache_write_per_mtok": 0.125,
               "cache_read_per_mtok": 0.01, "output_per_mtok": 0.50},
     "sonnet": {"id": "claude-sonnet-5-5", "input_per_mtok": 2.00, "cache_write_per_mtok": 2.50,
-               "cache_read_per_mtok": 0.20, "output_per_mtok": 10.00},
+               "cache_read_per_mtok": 0.10, "output_per_mtok": 10.00},
 }
 DEFAULT_MODEL = "haiku"
 DEFAULT_BUDGET_USD = 2.00
@@ -391,7 +392,8 @@ class ScriptedSupervisor:
     and leaves holding trims to the envelope. Version 7 (strategy_plan_v7) keeps every action
     inside the ranges the observation shows and uses the version 7 battery plan; version 8
     (strategy_plan_v8) adds extra cooling in a warm room, and version 9 (strategy_plan_v9) keeps a
-    little charge for the evening shave. Version 2
+    little charge for the evening shave. Version 10 (free mode) sends its suggestion, the version 9
+    strategy, exactly, with no deviation_reason. Version 2
     observations get the 0.3.0 rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
@@ -436,7 +438,11 @@ class ScriptedSupervisor:
             return CallResult('{"reason": "charge batteries", "Building_1": {"battery": 0.4', *self.tokens,
                               stop_reason="end_turn", model="scripted")
         first = next(iter(obs["buildings"].values()), {})
-        if "strategy" in first and "shave_now" in obs["peak"]:  # version 9
+        if "suggestion" in first:  # version 10, free mode: the suggestion exactly, so no deviation_reason
+            reply = {"reason": obs["suggestion_reason"]}
+            for b, s in sorted(obs["buildings"].items()):
+                reply[b] = {**s["suggestion"], "end_trim": None, "deviation_reason": None}
+        elif "strategy" in first and "shave_now" in obs["peak"]:  # version 9
             reply = strategy_plan_v9(obs, self.strategy_v9)
         elif "strategy" in first:  # version 8
             reply = strategy_plan_v8(obs, self.strategy_v8)

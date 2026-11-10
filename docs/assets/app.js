@@ -493,6 +493,17 @@
     });
     return ul;
   }
+  // Free mode (0.13.0): where the model departed from the strategy's suggestion, with its hypothesis.
+  function deviationList(devs) {
+    var ul = el("ul", "trim-ends");
+    devs.forEach(function (v) {
+      var li = el("li");
+      li.appendChild(el("code", "", "off suggestion: " + (v.devices.length ? v.devices.join(", ") : "none")));
+      li.appendChild(el("span", "", bname(v.building) + ": " + v.reason));
+      ul.appendChild(li);
+    });
+    return ul;
+  }
   function renderReasons(hour) {
     var sc = state.sc, host = $("reasons");
     var show = window.innerWidth < 640 ? 3 : 4;
@@ -517,6 +528,7 @@
         card.appendChild(ul);
       }
       if (d.trim_ends && d.trim_ends.length && k === 0) card.appendChild(trimEndList(d.trim_ends));
+      if (d.deviations && d.deviations.length && k === 0) card.appendChild(deviationList(d.deviations));
       host.appendChild(card);
       if (k === 0 && !reduceMotion) (function (c) { requestAnimationFrame(function () { c.classList.remove("enter"); }); })(card);
     }

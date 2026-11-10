@@ -32,7 +32,7 @@ from .model import (
     request_sha256,
     worst_case_cost_usd,
 )
-from .prompt import PROMPT_VERSION, Lookahead, build_request, end_trim_field, observe
+from .prompt import FREE_MODE_FROM, PROMPT_VERSION, Lookahead, build_request, end_trim_field, observe, parse_reply_v10
 from .signals import PeakInfo, PeakTracker, PriceOutlook
 
 
@@ -179,6 +179,9 @@ class AgentController:
     lookahead: Lookahead = field(default_factory=Lookahead)
     peaks: PeakTracker | None = None
     mode: str = "agent"
+    # Free mode (prompt version 10): this hour's departures from the suggestion, with their reasons.
+    # None for earlier versions, so their step records are unchanged.
+    deviations: dict | None = None
     counts: dict = field(default_factory=lambda: {"calls": 0, "clamped": 0, "fallback": 0, "budget_skipped": 0})
     tokens: dict = field(default_factory=lambda: {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0})
 
@@ -208,6 +211,8 @@ class AgentController:
                                 self.max_tokens, self.effort, self.prompt_version, self.prompt_cache)
         worst = worst_case_cost_usd(self.supervisor.model_key, request)
         call_info = None
+        if self.prompt_version >= FREE_MODE_FROM:
+            self.deviations = {}
         if not self.budget.allows(worst):
             decision = self.envelope.fallback(ctx, self.budget.stop_reason or "budget stop")
             self.counts["budget_skipped"] += 1
@@ -247,7 +252,10 @@ class AgentController:
             if res.error:
                 decision = self.envelope.fallback(ctx, f"no usable reply: {res.error}")
             else:
-                proposal, err = parse_reply(res.text, buildings, end_trim_field(self.prompt_version))
+                if self.prompt_version >= FREE_MODE_FROM:
+                    proposal, err, self.deviations = parse_reply_v10(res.text, buildings, obs)
+                else:
+                    proposal, err = parse_reply(res.text, buildings, end_trim_field(self.prompt_version))
                 decision = self.envelope.apply(proposal, ctx, None if err is None else f"invalid reply: {err}")
         if decision.status == "clamped":
             self.counts["clamped"] += 1
@@ -333,6 +341,9 @@ def run_session(
                 "decision": None if decision is None else decision.as_dict(),
                 "call": call_info,
             }
+            deviations = getattr(controller, "deviations", None)
+            if deviations is not None:  # free mode only, so earlier runs' records are unchanged
+                rec["deviations"] = deviations
             writer.step(rec)
             if on_step is not None:
                 on_step(rec)
@@ -467,7 +478,8 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
     mismatched = sorted(set(sim.action_mismatches))
     identical = 0
     for orig, new in zip(sim.steps, replayed):
-        if orig.get("decision") == new.get("decision") and orig["actions"] == new["actions"]:
+        if (orig.get("decision") == new.get("decision") and orig["actions"] == new["actions"]
+                and orig.get("deviations") == new.get("deviations")):
             identical += 1
         elif orig["step"] not in mismatched:
             mismatched.append(orig["step"])

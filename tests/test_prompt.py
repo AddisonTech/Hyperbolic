@@ -125,12 +125,12 @@ def test_v2_prompt_states_the_strategy_and_the_rules():
 def test_request_carries_the_observation_for_each_version():
     st = fake_states(1)[0]
     ctx = context_from_state(st)
-    for version in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+    for version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
         obs = observe(version, st, ctx, None, Lookahead())
         req = build_request(obs, EnvelopeConfig(), tuple(st["buildings"]), "haiku", prompt_version=version)
         assert observation_from_request(req) == json.loads(json.dumps(obs))
     with pytest.raises(ValueError):
-        observe(10, st, ctx, None, Lookahead())
+        observe(11, st, ctx, None, Lookahead())
 
 
 @pytest.mark.parametrize("version", [3, 4, 5, 6, 7])

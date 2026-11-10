@@ -46,15 +46,24 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      Version 9 says to send every number, a trim start and a small shave too, and to shave in any
      hour peak.shave_now (new) is true, and its strategy keeps a little charge for that shave. The
      envelope's rules are the same as for version 6.
+ 10  v0.13.0, free mode, an experiment beside the default. The version 9 observation with the version
+     9 strategy's whole action per building shown as suggestion (with suggestion_reason), not as an
+     instruction, plus what the agent could already see but version 9 did not show: the direct solar
+     forecast and each building's ratings (heat pump and battery power, battery standing loss, water
+     heater efficiency). The agent may depart from the suggestion when it expects lower cost or
+     emissions without losing comfort or the peaks, and every building whose actions differ from its
+     suggestion carries deviation_reason, a short hypothesis. The envelope's rules are the same as
+     for version 6.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 
 from . import district as dc
-from .envelope import Decision, Envelope, EnvelopeConfig, StepContext, proposal_json_schema
+from .envelope import DEVICE_KEYS, Decision, Envelope, EnvelopeConfig, StepContext, parse_reply, proposal_json_schema
 from .model import (
     DEFAULT_EFFORT,
     DEFAULT_MAX_TOKENS,
@@ -74,9 +83,19 @@ from .signals import charge_spread, combined_signal
 
 
 PROMPT_VERSION = 9
-PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
+PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 # From this version the reply may end a held cooling trim early (envelope trim hold, 0.8.0).
 END_TRIM_FROM = 6
+# From this version (0.13.0, free mode) the strategy is a suggestion and every building whose actions
+# differ from it carries deviation_reason.
+FREE_MODE_FROM = 10
+# deviation_reason is a short hypothesis: the prompt asks for at most the target, a reply over the
+# maximum (under 150 characters) is invalid.
+DEVIATION_REASON_TARGET_CHARS = 120
+DEVIATION_REASON_MAX_CHARS = 149
+# An action differs from its suggestion when it is further than this from it (both rounded to 3
+# decimals in the observation; null counts as baseline_action).
+DEVIATION_TOLERANCE = 0.0005
 
 
 def end_trim_field(version: int) -> bool:
@@ -1075,6 +1094,180 @@ Reply with one JSON object only, matching the schema. "reason" is one plain sent
 reply invalid."""
 
 
+def build_observation_v10(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
+                          envelope: Envelope | None) -> dict:
+    """Version 10 (free mode): the version 9 observation with its strategy shown as suggestion and
+    suggestion_reason, plus the direct solar forecast and each building's ratings, which the
+    simulator state already holds and version 9 did not show. suggestion is exactly what version 9
+    shows as strategy for the same state."""
+    obs = build_observation_v9(state, ctx, last, look, envelope)
+    obs["suggestion_reason"] = obs.pop("strategy_reason")
+    shared = state["shared"]
+    hz = shared.get("forecast_horizons_h") or [0, *dc.FORECAST_HORIZONS_H]
+    solar = shared.get("direct_solar_forecast") or []
+    obs["solar_forecast"] = {"direct_w_m2": {("now" if int(h) == 0 else f"in_{int(h)}h"): _r(v, 0)
+                                             for h, v in zip(hz, solar)}}
+    for b, s in state["buildings"].items():
+        ob = obs["buildings"][b]
+        ob["suggestion"] = ob.pop("strategy")
+        ob["cooling_power_kw"] = _r(s.get("cooling_power_kw"), 2)
+        ob["battery"].update({"power_kw": _r(s.get("battery_power_kw"), 2),
+                              "loss_per_hour": _r(s.get("battery_loss_per_hour"), 6)})
+        ob["dhw_tank"]["heater_efficiency"] = _r(s.get("dhw_heater_efficiency"), 3)
+    return obs
+
+
+def system_prompt_v10(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    peak = ", battery then tank charging above peak.target_kwh" if cfg.peak_limit else ""
+    spread = ", grid charging when grid_charging_ok is false (spare solar may still be stored)" if cfg.spread_check else ""
+    sp = StrategyParamsV9()  # the suggestion's numbers, chosen on the month set
+    full = sp.cold_margin_c + sp.cold_ramp_c
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings (CityLearn 2023 challenge data). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
+
+Goals, in this order, graded by CityLearn's own KPIs over the month against the no-control reference \
+(storage idle, heat pump meeting the ideal load):
+1. Comfort: no more discomfort, too cool or too warm, than the reference. Discomfort is any occupied \
+hour with indoor temperature outside setpoint +/- {cfg.comfort_band_k:g} C.
+2. Peaks and smoothness: the district's daily and monthly peak, daily load factor and ramping at or \
+better than the reference. Ramping counts every hour the district draws more than the hour before.
+3. Cost first, then carbon. Each building's cost counts equally, whatever its size.
+
+Free mode. suggestion in each building is what a fixed rule-based strategy (below) would send this hour \
+for cooling, dhw and battery, worked out in code inside the envelope's ranges, with suggestion_reason. \
+It is a suggestion, not an instruction. You may depart from it in any building, any hour, whenever you \
+expect lower cost or emissions over the month without losing comfort or making the daily or monthly \
+peak worse. For example: cool a room ahead of the top-price hours while power is cheap, so it needs \
+less cooling when power is dear; move battery charge or discharge to hours you expect to pay off \
+better; use the hot water tank. Where you see no gain, send the suggestion exactly.
+
+deviation_reason, in each building: null when you send its suggestion. When any action there differs \
+from its suggestion by more than {DEVIATION_TOLERANCE:g} (null counts as baseline_action), or you send \
+end_trim, it is required: your hypothesis, what the change should gain and why, in at most \
+{DEVIATION_REASON_TARGET_CHARS} characters. A differing building without one, or one of \
+{DEVIATION_REASON_MAX_CHARS + 1} characters or more, makes the whole reply invalid.
+
+What you see:
+- suggestion and suggestion_reason, as above.
+- cooling_range and battery_range: the values the safety envelope lets through this hour without a \
+clamp. cooling_range null: only the baseline passes.
+- trim: the cooling trim the envelope carries: depth below baseline_action, state (off, hold, ease, \
+end), min_depth, end_trim_ok. last_clamp: what the envelope changed there last hour, and why.
+- price_plan, next_24h (price and carbon for each of the next 24 hours), price_outlook, carbon_outlook, \
+outdoor_c_forecast, solar_forecast (direct irradiance now and 6, 12 and 24 hours ahead), smoothing and \
+peak (district load, today's forecast peak, the month's peak so far, shave_now).
+- each building: indoor_c, setpoint_c, comfort_band_c, indoor_vs_setpoint_c, occupied, loads, solar, \
+battery (soc, capacity_kwh, power_kw, loss_per_hour, soc_floor, usable_kwh, round_trip_min, \
+grid_charging_ok), dhw_tank (soc, capacity_kwh, heater_efficiency), cooling_power_kw, baseline_action \
+and last_action.
+
+Strategy (suggestion already applies it):
+1. Cooling. An occupied room more than {sp.cold_margin_c:g} C below its setpoint is overcooled: cooling \
+goes below baseline_action, from 0 at {sp.cold_margin_c:g} C below to {sp.cold_trim:g} at {full:g} C or more \
+below. That starts a trim when state is off; while it is held, cooling is a number inside cooling_range, \
+never null. An occupied room running warm with no trim held gets more cooling than baseline_action: from \
+0 at {sp.warm_margin_c:g} C above its setpoint to {sp.warm_boost:g} at {sp.warm_margin_c + sp.warm_ramp_c:g} \
+C or more above. Otherwise cooling is null, exactly baseline_action. It never cools ahead of time.
+2. Battery. Discharge the usable charge evenly over the top-price hours left, keeping {sp.evening_reserve:g} \
+above the floor, each hour no more than load_now_kwh. In any other hour shave when peak.shave_now \
+(district_load_now_kwh at least {sp.shave:g} x forecast_today_kwh), covering the building's own load with \
+the charge left. Charge from the grid only when grid_charging_ok, in the cheapest, cleanest hours, up to \
+{sp.charge_rate:g} of capacity per hour within headroom_kwh, to be near {sp.soc_target:g} when the top \
+price starts. Store spare solar any time. Else idle on flat_24h days.
+3. Leave the hot water tank at 0.
+
+Actions per building, null keeps baseline_action:
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- end_trim: null, or a short reason to end a held trim now (only when end_trim_ok, with null cooling).
+- deviation_reason: null, or your hypothesis for this building's departure from its suggestion.
+
+The ranges already apply the envelope's range, rate, state of charge ({cfg.soc_min:g} to \
+{cfg.soc_max:g}), deviation, comfort and trim hold rules. It also clamps the tank by the same rate \
+({cfg.dhw_rate_per_step:g}) and charge limits{spread}{peak}. An invalid reply uses the baseline action \
+everywhere for that hour. Clamps are logged against you.
+
+Reply with one JSON object only, matching the schema. "reason" is one plain sentence of at most \
+{dc.REASON_TARGET_CHARS} characters. A reason over {dc.REASON_MAX_CHARS} characters makes the whole \
+reply invalid."""
+
+
+def reply_json_schema(buildings: tuple[str, ...], prompt_version: int) -> dict:
+    """The structured output schema for a prompt version: the envelope's, and from version 10 a
+    required deviation_reason (string or null) in every building."""
+    schema = proposal_json_schema(buildings, end_trim_field(prompt_version))
+    if prompt_version < FREE_MODE_FROM:
+        return schema
+    # The envelope's schema shares one building object across buildings: copy each on its own.
+    schema = {**schema, "properties": dict(schema["properties"])}
+    for b in buildings:
+        dev = copy.deepcopy(schema["properties"][b])
+        dev["properties"]["deviation_reason"] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        dev["required"].append("deviation_reason")
+        schema["properties"][b] = dev
+    return schema
+
+
+def _effective(v, base):
+    return base if v is None else v
+
+
+def differing_devices(sent: dict, suggestion: dict, baseline: dict, end_trim: str | None = None) -> list[str]:
+    """The devices where a reply differs from the suggestion by more than DEVIATION_TOLERANCE, null
+    counting as baseline_action, plus end_trim when the reply ends a trim (the suggestion never does)."""
+    out = []
+    for d in DEVICE_KEYS:
+        a, s = _effective(sent.get(d), baseline.get(d)), _effective(suggestion.get(d), baseline.get(d))
+        if (a is None) != (s is None) or (a is not None and abs(a - s) > DEVIATION_TOLERANCE + 1e-9):
+            out.append(d)
+    if end_trim is not None:
+        out.append("end_trim")
+    return out
+
+
+def parse_reply_v10(text: str | None, buildings: tuple[str, ...], obs: dict
+                    ) -> tuple[dict | None, str | None, dict[str, dict]]:
+    """Free mode (version 10). Checks and removes each building's deviation_reason, hands the rest to
+    the envelope's own parse_reply unchanged, then requires a deviation_reason for every building
+    whose actions differ from its suggestion. Returns (proposal, error, deviations), deviations
+    {building: {"devices": [...], "reason": ...}} for every building that differs or gives a reason."""
+    if text is None or not text.strip():
+        return None, "empty or missing reply", {}
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return None, f"reply is not valid JSON: {exc.msg}", {}
+    if not isinstance(data, dict):
+        return None, "reply is not a JSON object", {}
+    reasons: dict[str, str | None] = {}
+    for b in buildings:
+        acts = data.get(b)
+        if not isinstance(acts, dict):
+            continue  # the envelope's parse reports the missing or malformed building
+        if "deviation_reason" not in acts:
+            return None, f"reply failed schema at {b}.deviation_reason: Field required", {}
+        r = acts.pop("deviation_reason")
+        if r is not None and not (isinstance(r, str) and 1 <= len(r) <= DEVIATION_REASON_MAX_CHARS):
+            return None, (f"reply failed schema at {b}.deviation_reason: a string of 1 to "
+                          f"{DEVIATION_REASON_MAX_CHARS} characters or null"), {}
+        reasons[b] = r
+    proposal, err = parse_reply(json.dumps(data), buildings, end_trim=True)
+    if err is not None:
+        return None, err, {}
+    deviations: dict[str, dict] = {}
+    for b in buildings:
+        ob = obs["buildings"][b]
+        diff = differing_devices(proposal["buildings"][b], ob["suggestion"], ob["baseline_action"],
+                                 proposal.get("end_trim", {}).get(b))
+        if diff and reasons.get(b) is None:
+            return None, f"{b} differs from its suggestion ({', '.join(diff)}) without deviation_reason", {}
+        if diff or reasons.get(b) is not None:
+            deviations[b] = {"devices": diff, "reason": reasons.get(b)}
+    return proposal, None, deviations
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -1095,6 +1288,8 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v8(state, ctx, last, look, envelope)
     if version == 9:
         return build_observation_v9(state, ctx, last, look, envelope)
+    if version == 10:
+        return build_observation_v10(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
 
@@ -1120,7 +1315,8 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
     prompt caching rebuild the request they sent."""
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
               4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6,
-              7: system_prompt_v7, 8: system_prompt_v8, 9: system_prompt_v9}[prompt_version](cfg, buildings)
+              7: system_prompt_v7, 8: system_prompt_v8, 9: system_prompt_v9,
+              10: system_prompt_v10}[prompt_version](cfg, buildings)
     if prompt_cache:
         # Default 5 minute TTL: hourly calls run back to back, seconds apart.
         system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
@@ -1131,7 +1327,6 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
         "messages": [{"role": "user", "content": user_message(obs)}],
         "output_config": {
             "effort": effort,
-            "format": {"type": "json_schema",
-                       "schema": proposal_json_schema(buildings, end_trim_field(prompt_version))},
+            "format": {"type": "json_schema", "schema": reply_json_schema(buildings, prompt_version)},
         },
     }

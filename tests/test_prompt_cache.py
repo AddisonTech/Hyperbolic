@@ -25,7 +25,7 @@ from hyperbolic.runner import AgentController, NullWriter, RunWriter, controller
 
 quiet = lambda *_: None  # noqa: E731
 # Every prompt version a run can use, written out so a new version has to be added here.
-CACHED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
+CACHED_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
 
 class CapturingSupervisor:
@@ -89,7 +89,7 @@ def test_every_prompt_version_is_covered():
     assert CACHED_VERSIONS == PROMPT_VERSIONS
 
 
-@pytest.mark.parametrize("version", sorted({8, 9, PROMPT_VERSION}))
+@pytest.mark.parametrize("version", sorted({8, 9, 10, PROMPT_VERSION}))
 def test_prompt_is_long_enough_to_cache(version):
     # Claude Haiku 5.5 caches a prefix of 512 tokens or more. Plain English runs about 4 characters
     # a token; 6 is a conservative bound, so this many characters is at least 512 tokens.
@@ -98,9 +98,16 @@ def test_prompt_is_long_enough_to_cache(version):
 
 
 def test_prices_in_the_table():
-    for p in MODELS.values():
+    # Anthropic's published rates per million tokens (platform.claude.com pricing, checked 2026-11-10):
+    # a 5 minute cache write is 1.25x input; a cache read 0.1x on Haiku 5.5 and 0.05x on Sonnet 5.5.
+    want = {"haiku": ("claude-haiku-5-5", 0.10, 0.125, 0.01, 0.50),
+            "sonnet": ("claude-sonnet-5-5", 2.00, 2.50, 0.10, 10.00)}
+    for key, (model_id, inp, write, read, out) in want.items():
+        p = MODELS[key]
+        assert p["id"] == model_id
+        got = (p["input_per_mtok"], p["cache_write_per_mtok"], p["cache_read_per_mtok"], p["output_per_mtok"])
+        assert got == pytest.approx((inp, write, read, out))
         assert p["cache_write_per_mtok"] == pytest.approx(1.25 * p["input_per_mtok"])
-        assert p["cache_read_per_mtok"] == pytest.approx(0.1 * p["input_per_mtok"])
 
 
 def test_cost_of_a_call_with_cache_reads_writes_and_plain_input():
@@ -108,7 +115,7 @@ def test_cost_of_a_call_with_cache_reads_writes_and_plain_input():
     want = (1_000 * 0.10 + 2_000 * 0.125 + 5_000 * 0.01 + 300 * 0.50) / 1_000_000
     assert got == pytest.approx(want)
     assert call_cost_usd("sonnet", 1_000, 300, 5_000, 2_000) == pytest.approx(
-        (1_000 * 2.00 + 2_000 * 2.50 + 5_000 * 0.20 + 300 * 10.00) / 1_000_000)
+        (1_000 * 2.00 + 2_000 * 2.50 + 5_000 * 0.10 + 300 * 10.00) / 1_000_000)
     assert call_cost_usd("haiku", 1_000, 300) == pytest.approx((1_000 * 0.10 + 300 * 0.50) / 1_000_000)
     assert cache_hit_rate(1_000, 5_000, 2_000) == pytest.approx(5_000 / 8_000)
     assert cache_hit_rate(0, 0, 0) is None

@@ -101,6 +101,12 @@ def _decision(s: dict) -> dict:
             if h.get("action") == "end_early"]
     if ends:
         out["trim_ends"] = ends
+    # Free mode (0.13.0): each building's departure from its suggestion, with the model's hypothesis.
+    # Present only when there are some, so the viewer data of earlier runs is unchanged.
+    devs = [{"building": b, "devices": list(v.get("devices") or []), "reason": v.get("reason") or ""}
+            for b, v in sorted((s.get("deviations") or {}).items())]
+    if devs:
+        out["deviations"] = devs
     return out
 
 
