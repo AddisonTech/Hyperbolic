@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0 (unreleased)
+
+Question: does Sonnet agree with the v9 rules on its own, or did it only defer to them in 0.13.0 because they were handed to it? Prompt version 11 ("blind mode") is the version 10 observation without the suggestion, and a system prompt with no strategy rules or numbers. Same month as 0.13.0, same envelope. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
+
+**Acceptance rule, written before any live call or code change and not changed after.** On tuning July (`tuning-07`), Sonnet (`claude-sonnet-5-5`, prompt version 11, blind) passes if its `cost_total` is below v9 scripted's, with `carbon_emissions_total`, `discomfort_proportion` and `discomfort_hot_proportion` each no more than 0.001 worse, and `daily_peak_average` and `all_time_peak_average` each no more than 0.005 worse. Values are CityLearn's, at its six decimals; worse means higher.
+
+**How the result is read, pre-registered, whatever it is:**
+- **Passes:** blind Sonnet found savings the rules miss.
+- **Fails on cost by 0.002 or less, with agreement at 80 percent or more on every device:** Sonnet independently converged on the rules.
+- **Fails by more than 0.002, or agreement under 80 percent on any device:** the rules carry knowledge Sonnet does not find on its own, and its 0.13.0 deference was justified.
+- A result none of the three covers (for example cost below v9 scripted with another condition failed) is reported as covered by no reading, with its numbers.
+
+**Agreement** is the share of building-hours where the model's action is within the 0.10.0 tolerances (0.002 for cooling, 0.005 for the tank and battery) of the v9 strategy's action for the same state (`shadow_strategy`, worked out in code every hour and never sent to the model). Measured per device (cooling, dhw, battery) on the model's own reply, `null` counting as `baseline_action` on either side, and an `end_trim` counting as a cooling disagreement (the strategy never ends a trim early). Overall agreement is the share of building-hours where all three devices agree. Building-hours whose reply was unusable (no reply, or one the envelope's parse rejected) are left out of the shares and counted separately.
+
 ## 0.13.0 (2026-11-10)
 
 Question: given room to deviate from the v9 strategy, can a stronger model find savings the rules miss? Prompt version 10 ("free mode") shows the v9 strategy's action as a suggestion the model may depart from, with a short hypothesis for every departure. The envelope, its rules and every limit, the v9 strategy and every tuned number are unchanged. Nothing runs on the holdout.
