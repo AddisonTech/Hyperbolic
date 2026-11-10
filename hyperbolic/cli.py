@@ -290,7 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "trim hold, version 7 keeps it inside the ranges its observation shows, version 8 "
                         "adds extra cooling in a warm room and version 9 keeps charge for the evening shave; "
                         "version 10, free mode, shows the version 9 strategy as a suggestion the model may "
-                        "depart from with a deviation_reason, and run scripted sends the suggestion)")
+                        "depart from with a deviation_reason, and run scripted sends the suggestion; "
+                        "version 11, blind mode, shows no strategy and logs the version 9 strategy's action "
+                        "as shadow_strategy, which run scripted sends)")
     r.set_defaults(func=cmd_run)
 
     rp = sub.add_parser("replay", help="re-run a saved run from its files with zero model or simulator calls")

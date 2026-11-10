@@ -393,7 +393,8 @@ class ScriptedSupervisor:
     inside the ranges the observation shows and uses the version 7 battery plan; version 8
     (strategy_plan_v8) adds extra cooling in a warm room, and version 9 (strategy_plan_v9) keeps a
     little charge for the evening shave. Version 10 (free mode) sends its suggestion, the version 9
-    strategy, exactly, with no deviation_reason. Version 2
+    strategy, exactly, with no deviation_reason. Version 11 (blind mode) shows no strategy and gets the
+    version 9 strategy worked out on its observation, which is what it logs as shadow_strategy. Version 2
     observations get the 0.3.0 rule and version 1 the simpler 0.2.0 rule.
 
     Faults are opt-in: on listed steps it injects a bad reply so the envelope and fallback
@@ -442,6 +443,8 @@ class ScriptedSupervisor:
             reply = {"reason": obs["suggestion_reason"]}
             for b, s in sorted(obs["buildings"].items()):
                 reply[b] = {**s["suggestion"], "end_trim": None, "deviation_reason": None}
+        elif "cooling_power_kw" in first:  # version 11, blind mode: the shadow strategy, the version 9 strategy
+            reply = strategy_plan_v9(obs, self.strategy_v9)
         elif "strategy" in first and "shave_now" in obs["peak"]:  # version 9
             reply = strategy_plan_v9(obs, self.strategy_v9)
         elif "strategy" in first:  # version 8

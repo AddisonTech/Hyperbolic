@@ -54,6 +54,12 @@ Prompt versions are kept side by side so recorded runs replay byte for byte:
      emissions without losing comfort or the peaks, and every building whose actions differ from its
      suggestion carries deviation_reason, a short hypothesis. The envelope's rules are the same as
      for version 6.
+ 11  v0.14.0, blind mode, an experiment beside the default. The version 10 observation without
+     suggestion and suggestion_reason, and a system prompt with the goals, what the agent sees, the
+     actions, the envelope and the reply rules, but no strategy, rule or tuned number. The reply is
+     the envelope's own (with end_trim), with no deviation_reason. The version 9 strategy's action
+     for the same observation is worked out every hour in code (shadow_strategy) and logged in the
+     step record, never sent. The envelope's rules are the same as for version 6.
 """
 
 from __future__ import annotations
@@ -83,7 +89,7 @@ from .signals import charge_spread, combined_signal
 
 
 PROMPT_VERSION = 9
-PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+PROMPT_VERSIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 # From this version the reply may end a held cooling trim early (envelope trim hold, 0.8.0).
 END_TRIM_FROM = 6
 # From this version (0.13.0, free mode) the strategy is a suggestion and every building whose actions
@@ -96,6 +102,14 @@ DEVIATION_REASON_MAX_CHARS = 149
 # An action differs from its suggestion when it is further than this from it (both rounded to 3
 # decimals in the observation; null counts as baseline_action).
 DEVIATION_TOLERANCE = 0.0005
+# Version 11 (0.14.0, blind mode): no strategy is shown; the version 9 strategy's action for the same
+# observation is only logged, as shadow_strategy.
+BLIND_MODE = 11
+
+
+def free_mode(version: int) -> bool:
+    """Whether a prompt version is free mode (version 10): a suggestion and a deviation_reason."""
+    return version == FREE_MODE_FROM
 
 
 def end_trim_field(version: int) -> bool:
@@ -1195,10 +1209,10 @@ reply invalid."""
 
 
 def reply_json_schema(buildings: tuple[str, ...], prompt_version: int) -> dict:
-    """The structured output schema for a prompt version: the envelope's, and from version 10 a
-    required deviation_reason (string or null) in every building."""
+    """The structured output schema for a prompt version: the envelope's, and in version 10 (free mode)
+    a required deviation_reason (string or null) in every building."""
     schema = proposal_json_schema(buildings, end_trim_field(prompt_version))
-    if prompt_version < FREE_MODE_FROM:
+    if not free_mode(prompt_version):
         return schema
     # The envelope's schema shares one building object across buildings: copy each on its own.
     schema = {**schema, "properties": dict(schema["properties"])}
@@ -1268,6 +1282,73 @@ def parse_reply_v10(text: str | None, buildings: tuple[str, ...], obs: dict
     return proposal, None, deviations
 
 
+def build_observation_v11(state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
+                          envelope: Envelope | None) -> dict:
+    """Version 11 (blind mode): exactly the version 10 observation with suggestion and
+    suggestion_reason removed. Everything else stays, the solar forecast and building ratings too."""
+    obs = build_observation_v10(state, ctx, last, look, envelope)
+    del obs["suggestion_reason"]
+    for ob in obs["buildings"].values():
+        del ob["suggestion"]
+    return obs
+
+
+def shadow_strategy(obs: dict) -> dict:
+    """The version 9 strategy's reply for a version 11 observation (reason, and cooling, dhw, battery and
+    end_trim per building), worked out in code. Version 11 logs it every hour as shadow_strategy and
+    never sends it; it is what agreement and attribution are measured against, and what scripted
+    version 11 sends. A version 11 observation holds every field strategy_plan_v9 reads, unchanged from
+    version 9, so this equals strategy_plan_v9 on the version 9 observation of the same state."""
+    return strategy_plan_v9(obs)
+
+
+def system_prompt_v11(cfg: EnvelopeConfig, buildings: tuple[str, ...]) -> str:
+    """Blind mode: the version 10 prompt without the free mode paragraph, the deviation_reason rules and
+    the strategy. It states no strategy rule, threshold or tuned number."""
+    peak = ", battery then tank charging above peak.target_kwh" if cfg.peak_limit else ""
+    spread = ", grid charging when grid_charging_ok is false (spare solar may still be stored)" if cfg.spread_check else ""
+    return f"""You are the hourly supervisory controller for a simulated district of {len(buildings)} \
+buildings (CityLearn 2023 challenge data). Each building has a heat pump for space cooling, a hot water \
+tank, a battery and rooftop solar. Every hour you choose one action per device for every building.
+
+Goals, in this order, graded by CityLearn's own KPIs over the month against the no-control reference \
+(storage idle, heat pump meeting the ideal load):
+1. Comfort: no more discomfort, too cool or too warm, than the reference. Discomfort is any occupied \
+hour with indoor temperature outside setpoint +/- {cfg.comfort_band_k:g} C.
+2. Peaks and smoothness: the district's daily and monthly peak, daily load factor and ramping at or \
+better than the reference. Ramping counts every hour the district draws more than the hour before.
+3. Cost first, then carbon. Each building's cost counts equally, whatever its size.
+
+What you see:
+- cooling_range and battery_range: the values the safety envelope lets through this hour without a \
+clamp. cooling_range null: only the baseline passes.
+- trim: the cooling trim the envelope carries: depth below baseline_action, state (off, hold, ease, \
+end), min_depth, end_trim_ok. last_clamp: what the envelope changed there last hour, and why.
+- price_plan, next_24h (price and carbon for each of the next 24 hours), price_outlook, carbon_outlook, \
+outdoor_c_forecast, solar_forecast (direct irradiance now and 6, 12 and 24 hours ahead), smoothing and \
+peak (district load, today's forecast peak, the month's peak so far, shave_now).
+- each building: indoor_c, setpoint_c, comfort_band_c, indoor_vs_setpoint_c, occupied, loads, solar, \
+battery (soc, capacity_kwh, power_kw, loss_per_hour, soc_floor, usable_kwh, round_trip_min, \
+grid_charging_ok), dhw_tank (soc, capacity_kwh, heater_efficiency), cooling_power_kw, baseline_action \
+and last_action.
+
+Actions per building. null means baseline_action: the action the no-control reference takes for that \
+device this hour.
+- cooling: heat pump power as a fraction of nominal, {cfg.cooling_min:g} to {cfg.cooling_max:g}.
+- dhw: hot water tank, fraction of capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- battery: fraction of battery capacity to charge (+) or discharge (-) this hour. Baseline 0.
+- end_trim: null, or a short reason to end a held trim now (only when end_trim_ok, with null cooling).
+
+The ranges already apply the envelope's range, rate, state of charge ({cfg.soc_min:g} to \
+{cfg.soc_max:g}), deviation, comfort and trim hold rules. It also clamps the tank by the same rate \
+({cfg.dhw_rate_per_step:g}) and charge limits{spread}{peak}. An invalid reply uses the baseline action \
+everywhere for that hour. Clamps are logged against you.
+
+Reply with one JSON object only, matching the schema. "reason" is one plain sentence of at most \
+{dc.REASON_TARGET_CHARS} characters. A reason over {dc.REASON_MAX_CHARS} characters makes the whole \
+reply invalid."""
+
+
 def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, look: Lookahead,
             envelope: Envelope | None = None) -> dict:
     if version == 1:
@@ -1290,6 +1371,8 @@ def observe(version: int, state: dict, ctx: StepContext, last: Decision | None, 
         return build_observation_v9(state, ctx, last, look, envelope)
     if version == 10:
         return build_observation_v10(state, ctx, last, look, envelope)
+    if version == 11:
+        return build_observation_v11(state, ctx, last, look, envelope)
     raise ValueError(f"unknown prompt version {version}")
 
 
@@ -1316,7 +1399,7 @@ def build_request(obs: dict, cfg: EnvelopeConfig, buildings: tuple[str, ...], mo
     system = {1: system_prompt, 2: system_prompt_v2, 3: system_prompt_v3,
               4: system_prompt_v4, 5: system_prompt_v5, 6: system_prompt_v6,
               7: system_prompt_v7, 8: system_prompt_v8, 9: system_prompt_v9,
-              10: system_prompt_v10}[prompt_version](cfg, buildings)
+              10: system_prompt_v10, 11: system_prompt_v11}[prompt_version](cfg, buildings)
     if prompt_cache:
         # Default 5 minute TTL: hourly calls run back to back, seconds apart.
         system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]

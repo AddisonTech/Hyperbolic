@@ -32,7 +32,17 @@ from .model import (
     request_sha256,
     worst_case_cost_usd,
 )
-from .prompt import FREE_MODE_FROM, PROMPT_VERSION, Lookahead, build_request, end_trim_field, observe, parse_reply_v10
+from .prompt import (
+    BLIND_MODE,
+    PROMPT_VERSION,
+    Lookahead,
+    build_request,
+    end_trim_field,
+    free_mode,
+    observe,
+    parse_reply_v10,
+    shadow_strategy,
+)
 from .signals import PeakInfo, PeakTracker, PriceOutlook
 
 
@@ -182,6 +192,9 @@ class AgentController:
     # Free mode (prompt version 10): this hour's departures from the suggestion, with their reasons.
     # None for earlier versions, so their step records are unchanged.
     deviations: dict | None = None
+    # Blind mode (prompt version 11): the version 9 strategy's reply for this hour's observation, worked
+    # out in code and never sent. None for other versions, so their step records are unchanged.
+    shadow: dict | None = None
     counts: dict = field(default_factory=lambda: {"calls": 0, "clamped": 0, "fallback": 0, "budget_skipped": 0})
     tokens: dict = field(default_factory=lambda: {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0})
 
@@ -211,8 +224,10 @@ class AgentController:
                                 self.max_tokens, self.effort, self.prompt_version, self.prompt_cache)
         worst = worst_case_cost_usd(self.supervisor.model_key, request)
         call_info = None
-        if self.prompt_version >= FREE_MODE_FROM:
+        if free_mode(self.prompt_version):
             self.deviations = {}
+        if self.prompt_version == BLIND_MODE:
+            self.shadow = shadow_strategy(obs)
         if not self.budget.allows(worst):
             decision = self.envelope.fallback(ctx, self.budget.stop_reason or "budget stop")
             self.counts["budget_skipped"] += 1
@@ -252,7 +267,7 @@ class AgentController:
             if res.error:
                 decision = self.envelope.fallback(ctx, f"no usable reply: {res.error}")
             else:
-                if self.prompt_version >= FREE_MODE_FROM:
+                if free_mode(self.prompt_version):
                     proposal, err, self.deviations = parse_reply_v10(res.text, buildings, obs)
                 else:
                     proposal, err = parse_reply(res.text, buildings, end_trim_field(self.prompt_version))
@@ -344,6 +359,9 @@ def run_session(
             deviations = getattr(controller, "deviations", None)
             if deviations is not None:  # free mode only, so earlier runs' records are unchanged
                 rec["deviations"] = deviations
+            shadow = getattr(controller, "shadow", None)
+            if shadow is not None:  # blind mode only, likewise
+                rec["shadow_strategy"] = shadow
             writer.step(rec)
             if on_step is not None:
                 on_step(rec)
@@ -479,7 +497,8 @@ def replay_run(run_dir: Path, out_dir: Path | None = None, log=lambda *_: None) 
     identical = 0
     for orig, new in zip(sim.steps, replayed):
         if (orig.get("decision") == new.get("decision") and orig["actions"] == new["actions"]
-                and orig.get("deviations") == new.get("deviations")):
+                and orig.get("deviations") == new.get("deviations")
+                and orig.get("shadow_strategy") == new.get("shadow_strategy")):
             identical += 1
         elif orig["step"] not in mismatched:
             mismatched.append(orig["step"])

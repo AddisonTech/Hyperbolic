@@ -58,7 +58,7 @@ def _warm(obs, b="Building_1", gap=2.0, **over):
 
 
 def test_v7_and_v8_stay_selectable():
-    assert PROMPT_VERSION == 9 and PROMPT_VERSIONS[-4:] == (7, 8, 9, 10)
+    assert PROMPT_VERSION == 9 and PROMPT_VERSIONS[-5:] == (7, 8, 9, 10, 11)
     st, ctx, look, env, v8 = _obs()
     v7 = observe(7, st, ctx, None, look, env)
     assert "strategy_battery" in v7["buildings"]["Building_1"] and "signal_outlook" in v7
