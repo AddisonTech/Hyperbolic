@@ -132,6 +132,80 @@ def test_committed_baseline_pairs_with_a_new_agent_run(tmp_path, fixture_runs):
     assert pair == (results / "baseline", runs / "agent")
 
 
+def _relabel(src, dest, dataset, month):
+    import shutil
+
+    shutil.copytree(src, dest)
+    m = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+    m["dataset"] = dataset
+    m["simulator"]["month"] = month
+    (dest / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    return dest
+
+
+def test_a_run_off_phase_2_gets_its_own_label(fixture_runs, tmp_path):
+    """The dataset id and name come from the run's manifest, not from the phase 2 constant."""
+    from hyperbolic import district as dc
+    from hyperbolic.viewer import dataset_label
+
+    base, agent = fixture_runs
+    tuning = "citylearn_challenge_2023_phase_2_online_evaluation_1_month_07"
+    pair = (_relabel(base, tmp_path / "b", tuning, "tuning-07"), _relabel(agent, tmp_path / "a", tuning, "tuning-07"))
+    data = build_viewer_data(pair)
+    s = data["scenarios"][0]
+    assert data["dataset"] == s["id"] == tuning
+    assert s["name"] == "CityLearn 2023 challenge, phase 2 online evaluation 1, tuning July"
+    assert dc.DATASET not in dumps(data) and dc.DATASET_NAME not in dumps(data)
+    # Phase 2 runs keep their original label, so their viewer data is unchanged (the golden file).
+    old = build_viewer_data(fixture_runs)
+    assert old["dataset"] == old["scenarios"][0]["id"] == dc.DATASET
+    assert old["scenarios"][0]["name"] == dc.DATASET_NAME
+    assert "prompt_version" not in old["scenarios"][0]["agent_run"]  # the fixture records none
+    assert dataset_label({"dataset": "citylearn_challenge_2023_phase_3_1_buildings_4_5_6_month_06",
+                          "simulator": {"month": "holdout-06"}}) == \
+        "CityLearn 2023 challenge, phase 3 1 buildings 4 5 6, holdout June"
+    assert dataset_label({"dataset": "some_other_set"}) == "some_other_set"
+
+
+PUBLISHED_AGENT = "citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T210024Z"
+
+
+def test_published_viewer_shows_the_0150_haiku_v9_tuning_july_run():
+    """docs/ shows the 0.15.0 Haiku run on tuning July, prompt version 9, against the committed
+    tuning July baseline."""
+    root = Path(__file__).parents[1]
+    data = json.loads((root / "docs" / "data" / "viewer.json").read_text(encoding="utf-8"))
+    s = data["scenarios"][0]
+    assert data["dataset"] == s["id"] == "citylearn_challenge_2023_phase_2_online_evaluation_1_month_07"
+    assert s["name"] == "CityLearn 2023 challenge, phase 2 online evaluation 1, tuning July"
+    assert data["sample"] is False and s["hours"] == 743
+    assert s["agent"]["run"] == PUBLISHED_AGENT and s["baseline"]["run"] == "baseline_tuning07"
+    r = s["agent_run"]
+    assert (r["supervisor"], r["model_key"], r["model_id"], r["prompt_version"]) == ("live", "haiku",
+                                                                                     "claude-haiku-5-5", 9)
+    assert (r["calls"], r["clamped_hours"], r["fallback_hours"], r["cost_usd"]) == (743, 10, 0, 0.3529)
+    assert s["agent"]["kpi"]["cost_total"] == 0.919662 and s["baseline"]["kpi"]["cost_total"] == 1.0
+    assert all(d["reason"] for d in s["agent"]["decisions"])
+    # The committed baseline is the tuning July no-control reference.
+    m = json.loads((root / "results" / "baseline_tuning07" / "manifest.json").read_text(encoding="utf-8"))
+    assert (m["mode"], m["dataset"], m["simulator"]["month"]) == ("baseline", s["id"], "tuning-07")
+    # The page reads the dataset from the data instead of naming phase 2.
+    html = (root / "docs" / "index.html").read_text(encoding="utf-8")
+    assert "phase_2_local_evaluation" not in html and 'id="dataset-id"' in html
+
+
+def test_published_viewer_rebuilds_from_its_runs():
+    """When the agent run is on disk (runs/ is not committed), the builder reproduces docs/data byte for byte."""
+    import pytest
+
+    root = Path(__file__).parents[1]
+    agent = root / "runs" / "v9haiku" / PUBLISHED_AGENT
+    if not (agent / "steps.jsonl").exists():
+        pytest.skip("the 0.15.0 Haiku v9 run is kept locally in runs/v9haiku")
+    text = dumps(build_viewer_data((root / "results" / "baseline_tuning07", agent)))
+    assert text == (root / "docs" / "data" / "viewer.json").read_text(encoding="utf-8")
+
+
 def test_viewer_version_follows_the_package():
     """The footer used to hard-code 0.2.0; it now reads assets/version.js, which must match."""
     import re

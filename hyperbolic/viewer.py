@@ -21,6 +21,33 @@ def _r(v, nd=3):
     return None if v is None else round(float(v), nd)
 
 
+MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+               "October", "November", "December")
+
+
+def dataset_label(manifest: dict) -> str:
+    """The display name of a run's dataset, taken from its manifest.
+
+    The phase 2 local evaluation set keeps its original name, so the viewer data of runs on
+    it is unchanged. A month cut from another challenge dataset is named after that dataset,
+    the month set it belongs to (tuning or holdout, from the manifest's month key) and the
+    calendar month. Anything else is shown by its dataset id.
+    """
+    ds = manifest.get("dataset") or ""
+    if ds == dc.DATASET:
+        return dc.DATASET_NAME
+    prefix = "citylearn_challenge_"
+    head, sep, month = ds.rpartition("_month_")
+    if not (ds.startswith(prefix) and sep and month.isdigit() and 1 <= int(month) <= 12):
+        return ds
+    year, _, rest = head[len(prefix):].partition("_")
+    source = rest.replace("_", " ")
+    key = str((manifest.get("simulator") or {}).get("month") or "")
+    group = key.split("-")[0] if key.split("-")[0] in ("tuning", "holdout") else ""
+    when = " ".join(filter(None, (group, MONTH_NAMES[int(month) - 1])))
+    return f"CityLearn {year} challenge, {source}, {when}"
+
+
 def load_run(run_dir: Path) -> dict:
     run_dir = Path(run_dir)
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -179,7 +206,7 @@ def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
     decisions = _decisions(agent, n)
     return {
         "id": am["dataset"],
-        "name": dc.DATASET_NAME,
+        "name": dataset_label(am),
         "hours": n,
         "episode_hours": am.get("episode_hours"),
         "baseline_sample": is_sample(base),
@@ -198,6 +225,8 @@ def build_scenario(baseline_dir: Path, agent_dir: Path) -> dict:
             "model_key": sup.get("model_key"),
             "model_id": sup.get("model_id"),
             "budget_usd": sup.get("budget_usd"),
+            # Only runs that record a prompt version carry it, so older viewer data is unchanged.
+            **({"prompt_version": sup["prompt_version"]} if sup.get("prompt_version") is not None else {}),
             "cost_usd": _r(ar.get("cost_usd", 0.0), 4),
             "calls": ar.get("calls", len(agent["calls"])),
             "clamped_hours": sum(1 for d in decisions if d["status"] == "clamped"),
@@ -216,7 +245,7 @@ def build_viewer_data(pair: tuple[Path, Path]) -> dict:
     s = build_scenario(*pair)
     return {
         "schema": SCHEMA,
-        "dataset": dc.DATASET,
+        "dataset": s["id"],
         "comfort_band_k": dc.COMFORT_BAND_K,
         "buildings": [{"id": b, "name": b.replace("_", " ")} for b in s["setpoint_c"]],
         "kpis": [{"id": k, "name": v[0], "unit": v[1]} for k, v in dc.KPIS.items()],

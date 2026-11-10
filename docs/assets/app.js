@@ -602,14 +602,17 @@
   function controllerName(r) {
     if (r.supervisor === "scripted") return "the rule-based controller (scripted replies, no model calls)";
     if (r.supervisor === "hold") return "the no-control actions held through the envelope";
-    return r.model_id;
+    return modelName(r);
+  }
+  function modelName(r) {
+    return r.model_id + (r.prompt_version != null ? ", prompt version " + r.prompt_version : "");
   }
   function renderHero() {
     var sc = state.sc, h = sc.headline, r = sc.agent_run;
     var eb = $("eyebrow");
     eb.textContent = "";
     if (sc.agent_sample) eb.appendChild(el("span", "tag sample", "Sample agent"));
-    ["CityLearn 2023 challenge", DATA.buildings.length + " buildings", (sc.hours < 48 ? sc.hours + " hours" : Math.round(sc.hours / 24) + " days") + ", hourly"].forEach(function (s, i) {
+    [sc.name || "CityLearn 2023 challenge", DATA.buildings.length + " buildings", (sc.hours < 48 ? sc.hours + " hours" : Math.round(sc.hours / 24) + " days") + ", hourly"].forEach(function (s, i) {
       if (i) eb.appendChild(el("span", "dot"));
       eb.appendChild(el("span", "", s));
     });
@@ -634,6 +637,7 @@
       host.appendChild(box);
     });
     $("sample-banner").hidden = !DATA.sample;
+    $("dataset-id").textContent = "Dataset: " + (sc.id || DATA.dataset) + " (CityLearn, MIT license)";
     $("reasons-sub").textContent = r.calls + " calls, " + r.clamped_hours + " clamped, " + r.fallback_hours + " fallback";
   }
   function renderScorecard() {
@@ -691,7 +695,7 @@
     t2.appendChild(tb2);
     card2.appendChild(t2);
     var facts = el("div", "facts");
-    [["Model", r.supervisor === "scripted" ? "Rule-based, no API" : r.supervisor === "hold" ? "Baseline hold, no API" : r.model_id],
+    [["Model", r.supervisor === "scripted" ? "Rule-based, no API" : r.supervisor === "hold" ? "Baseline hold, no API" : modelName(r)],
      ["Run cost", "$" + fmt(r.cost_usd, 2) + " / $" + fmt(r.budget_usd, 2)],
      ["Model calls", fmt(r.calls, 0)],
      ["Clamped hours", fmt(r.clamped_hours, 0)],
