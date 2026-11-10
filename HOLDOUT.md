@@ -1,5 +1,7 @@
 # Holdout
 
+**Scored once.** The holdout was scored once, in 0.12.0, and its results are in the README's [Holdout results](README.md#holdout-results) section. Nothing is run on it again.
+
 Chosen and sealed on 2026-10-23, at the start of 0.11.0, before any 0.11.0 tuning and before any controller was run on it. Nothing in 0.11.0 or later is tuned on it, and it is scored once, for the final result, with `--holdout-final`.
 
 ## The choice

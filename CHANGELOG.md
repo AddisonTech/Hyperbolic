@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0 (unreleased)
+
+Question: given room to deviate from the v9 strategy, can a stronger model find savings the rules miss? Prompt version 10 ("free mode") shows the v9 strategy's action as a suggestion the model may depart from, with a short hypothesis for every departure. The envelope, its rules and every limit, the v9 strategy and every tuned number are unchanged. Nothing runs on the holdout.
+
+**Acceptance rule, written before any live call and not changed after.** On the pilot month (tuning July, `tuning-07`), the free-mode model (`claude-sonnet-5-5`, prompt version 10) passes if its `cost_total` is below v9 scripted's on the same month, with `carbon_emissions_total`, `discomfort_proportion` and `discomfort_hot_proportion` (too warm) each no more than 0.001 worse than v9 scripted, and both peaks (`daily_peak_average` and `all_time_peak_average`) no more than 0.005 worse. Values are CityLearn's, at its six decimals; worse means higher. If the pilot fails the rule, the remaining months are not run.
+
 ## 0.12.0 (2026-11-10)
 
 Goal: publish the one final scoring of the sealed holdout (`HOLDOUT.md`): Buildings 4, 5 and 6 of `citylearn_challenge_2023_phase_3_1`, June, July and August, each its own episode, with prompt version 9 and the 0.11.0 envelope exactly as shipped. Nothing in the strategy, the prompt, the envelope or any tuned number changes in this release, and it makes no model calls.
