@@ -8,6 +8,10 @@
   - every relative link and image in README.md, HOLDOUT.md, CHANGELOG.md and the four docs files
     (docs/HISTORY.md, docs/HOLDOUT_RESULTS.md, docs/LIMITS.md, docs/DESIGN.md) points at a file that
     exists and, where it names a heading, a heading that exists in that file
+  - when runs/ is on disk, every live run folder in it (a manifest whose supervisor kind is "live") is
+    either named in CHANGELOG.md by its path under runs/ (runs/live/<folder>; the path, because two
+    folders in different subfolders can share a name) or listed in runs/UNPUBLISHED.md in a table row
+    with a reason, and not both
 """
 
 from __future__ import annotations
@@ -100,6 +104,61 @@ def readme_errors(root: Path = ROOT) -> list[str]:
     return errors
 
 
+UNPUBLISHED = "runs/UNPUBLISHED.md"
+
+
+def live_run_folders(root: Path = ROOT) -> tuple[list[str], list[str]]:
+    """Paths (runs/...) of every live run folder under runs/, and errors for manifests that cannot be read."""
+    runs = root / "runs"
+    if not runs.is_dir():
+        return [], []
+    folders, errors = [], []
+    for manifest in sorted(runs.rglob("manifest.json")):
+        rel = manifest.parent.relative_to(root).as_posix()
+        try:
+            m = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            errors.append(f"{rel}/manifest.json: cannot be read ({exc})")
+            continue
+        if isinstance(m, dict) and (m.get("supervisor") or {}).get("kind") == "live":
+            folders.append(rel)
+    return folders, errors
+
+
+def unpublished_rows(root: Path = ROOT) -> dict[str, str]:
+    """runs/UNPUBLISHED.md table rows: run path (first cell) to reason (last cell)."""
+    path = root / UNPUBLISHED
+    rows = {}
+    if not path.is_file():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        run = cells[0].strip("`").strip()
+        if run.startswith("runs/"):
+            rows[run] = cells[-1] if len(cells) > 1 else ""
+    return rows
+
+
+def run_record_errors(root: Path = ROOT) -> list[str]:
+    """Every live run on disk is accounted for: named in the CHANGELOG or listed as unpublished, with a reason."""
+    folders, errors = live_run_folders(root)
+    if not folders:
+        return errors
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8") if (root / "CHANGELOG.md").is_file() else ""
+    listed = unpublished_rows(root)
+    for rel in folders:
+        named = re.search(re.escape(rel) + r"(?![\w./-])", changelog) is not None
+        if named and rel in listed:
+            errors.append(f"{rel}: named in CHANGELOG.md and also listed in {UNPUBLISHED}")
+        elif rel in listed and not listed[rel]:
+            errors.append(f"{rel}: listed in {UNPUBLISHED} without a reason")
+        elif not named and rel not in listed:
+            errors.append(f"{rel}: live run not named in CHANGELOG.md or listed in {UNPUBLISHED}")
+    return errors
+
+
 def tracked_files() -> list[Path]:
     out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     return [ROOT / line for line in out.splitlines() if line]
@@ -130,6 +189,7 @@ def main() -> int:
             errors.append("docs/data/viewer.js does not match docs/data/viewer.json; rerun hyperbolic compare")
     errors += readme_errors()
     errors += link_errors()
+    errors += run_record_errors()
     for e in errors:
         print(e)
     print("repo checks: " + ("FAILED" if errors else "passed"))

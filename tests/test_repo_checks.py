@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +91,78 @@ def test_readme_check_catches_length_images_and_version(tmp_path):
     assert any("ladder.png: missing" in e for e in cr.readme_errors(root))
     old_badge = GOOD_README.replace("version-9.9.9-", "version-9.9.8-")
     assert any("version badge" in e for e in cr.readme_errors(_tree(tmp_path / "d", old_badge)))
+
+
+def _run(root, rel, kind="live"):
+    folder = root / rel
+    folder.mkdir(parents=True)
+    supervisor = {"kind": kind} if kind else None
+    (folder / "manifest.json").write_text(json.dumps({"mode": "agent", "supervisor": supervisor}), encoding="utf-8")
+
+
+RUN_A = "runs/live/x_agent_citylearn_20261023T184434Z"
+RUN_B = "runs/v12/x_agent_citylearn_20261110T210024Z"
+RUN_C = "runs/v9haiku/x_agent_citylearn_20261110T210024Z"  # same folder name as RUN_B
+
+
+def test_run_record_check_skips_when_runs_is_not_on_disk(tmp_path):
+    cr = load("check_repo")
+    (tmp_path / "CHANGELOG.md").write_text("# C\n", encoding="utf-8")
+    assert cr.run_record_errors(tmp_path) == []
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "UNPUBLISHED.md").write_text("# U\n", encoding="utf-8")
+    assert cr.run_record_errors(tmp_path) == []  # runs/ holding only the list, as in a fresh clone
+
+
+def test_run_record_check_fails_on_a_run_missing_from_both(tmp_path):
+    cr = load("check_repo")
+    _run(tmp_path, RUN_A)
+    (tmp_path / "CHANGELOG.md").write_text("# C\n", encoding="utf-8")
+    errors = cr.run_record_errors(tmp_path)
+    assert errors == [f"{RUN_A}: live run not named in CHANGELOG.md or listed in runs/UNPUBLISHED.md"]
+    (tmp_path / "runs" / "UNPUBLISHED.md").write_text("| Run | Reason |\n|---|---|\n| `runs/live/other` | x |\n",
+                                                      encoding="utf-8")
+    assert cr.run_record_errors(tmp_path) == errors
+
+
+def test_run_record_check_accepts_the_changelog_or_the_list(tmp_path):
+    cr = load("check_repo")
+    _run(tmp_path, RUN_A)
+    _run(tmp_path, RUN_B)
+    _run(tmp_path, "runs/rule/x_agent_citylearn_20261022T162847Z", kind="scripted")  # not live: not checked
+    _run(tmp_path, "runs/x_baseline_citylearn_20261021T000000Z", kind=None)  # baseline: not checked
+    (tmp_path / "CHANGELOG.md").write_text(f"# C\n\n| `{RUN_A}` | 0.11.0 |\n", encoding="utf-8")
+    (tmp_path / "runs" / "UNPUBLISHED.md").write_text(
+        f"| Run folder | Reason |\n|---|---|\n| `{RUN_B}` | 24-hour smoke test, never reported |\n", encoding="utf-8")
+    assert cr.run_record_errors(tmp_path) == []
+
+
+def test_run_record_check_names_runs_by_path_and_wants_a_reason(tmp_path):
+    cr = load("check_repo")
+    _run(tmp_path, RUN_B)
+    _run(tmp_path, RUN_C)
+    (tmp_path / "CHANGELOG.md").write_text(f"# C\n\n`{RUN_B}`\n", encoding="utf-8")
+    # The same folder name under another subfolder is a different run.
+    assert cr.run_record_errors(tmp_path) == [f"{RUN_C}: live run not named in CHANGELOG.md or listed in runs/UNPUBLISHED.md"]
+    (tmp_path / "runs" / "UNPUBLISHED.md").write_text(f"| `{RUN_C}` |  |\n| `{RUN_B}` | reported too |\n",
+                                                      encoding="utf-8")
+    errors = cr.run_record_errors(tmp_path)
+    assert f"{RUN_C}: listed in runs/UNPUBLISHED.md without a reason" in errors
+    assert f"{RUN_B}: named in CHANGELOG.md and also listed in runs/UNPUBLISHED.md" in errors
+    assert len(errors) == 2
+    # A longer path that merely starts with a run's path does not name it.
+    (tmp_path / "runs" / "UNPUBLISHED.md").unlink()
+    (tmp_path / "CHANGELOG.md").write_text(f"# C\n\n`{RUN_B}_copy` `{RUN_C}`\n", encoding="utf-8")
+    assert cr.run_record_errors(tmp_path) == [f"{RUN_B}: live run not named in CHANGELOG.md or listed in runs/UNPUBLISHED.md"]
+
+
+def test_run_record_check_reports_an_unreadable_manifest(tmp_path):
+    cr = load("check_repo")
+    folder = tmp_path / RUN_A
+    folder.mkdir(parents=True)
+    (folder / "manifest.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text("# C\n", encoding="utf-8")
+    assert any("cannot be read" in e for e in cr.run_record_errors(tmp_path))
 
 
 def test_lost_line_check():

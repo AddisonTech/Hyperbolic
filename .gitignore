@@ -219,6 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Hyperbolic run folders (replayable records of each run)
-/runs/
+# Hyperbolic run folders (replayable records of each run); the list of unpublished runs is tracked
+/runs/*
+!/runs/UNPUBLISHED.md
 /runs-mock/

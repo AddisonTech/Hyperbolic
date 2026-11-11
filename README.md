@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/AddisonTech/Hyperbolic/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AddisonTech/Hyperbolic/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.15.1-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.15.2-informational.svg)](CHANGELOG.md)
 [![Live viewer](https://img.shields.io/badge/viewer-live-8b7ff0.svg)](https://addisontech.github.io/Hyperbolic/)
 
 Claude makes the hourly supervisory calls on cooling, batteries and hot water for a simulated district in [CityLearn](https://github.com/citylearn-project/CityLearn), and a deterministic safety envelope checks every move before it reaches the building. Every result is scored by CityLearn's own KPI evaluation.

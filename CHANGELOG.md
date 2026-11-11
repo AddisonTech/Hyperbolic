@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.15.2 (2026-11-11): record correction
+
+This release corrects the record. No model calls, no simulator runs, and no change to any result, strategy, envelope, tuned number or recorded run. `results/`, `holdout/` and `hyperbolic/data` are untouched, and every recorded run replays as before.
+
+**What ran.** On 2026-10-23, on the 0.11.0 code, four full live months ran that no release reported: Haiku (`claude-haiku-5-5`) with prompt version 9 on the phase 2 month and tuning June, July and August, one after another, from 17:36:31 to 19:54:36 UTC (13:36 to 15:54 EDT). They made 2,924 model calls and cost $2.059809. A 24-hour smoke run with the same settings on the phase 2 month ran just before them, from 17:34:58 to 17:35:57 UTC, for $0.015599 (`runs/smoke/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261023T173454Z`), and was not reported either. The five cost $2.075408 together. All five completed, no hour fell back, none reached its $2.00 budget, and each replays every hour with 0 model and 0 simulator calls (24, 719, 719, 743 and 743 hours).
+
+Settings, from each manifest and the same in all five: `claude-haiku-5-5`, prompt version 9, effort low, 2,000 max tokens, $2.00 budget, no prompt caching, tool version 0.11.0, and the envelope `battery_rate_per_step` 0.5, `comfort_band_k` 2.0, `comfort_margin_k` 0.5, `cooling_max` 1.0, `cooling_max_deviation` 0.15, `cooling_min` 0.0, `cooling_rate_per_step` 0.35, `dhw_rate_per_step` 0.5, `overcool_guard_unoccupied` true, `peak_forecast_days` 2, `peak_limit` true, `peak_target_fraction` 1.0, `soc_max` 0.95, `soc_min` 0.1, `spread_check` true, `storage_max` 1.0, `storage_min` -1.0, `trim_hold` true, `trim_hold_c` 0.5, `trim_min_depth` 0.002, `trim_release_step` 0.02. The three holdout runs and the 0.15.0 Haiku v9 run have the same envelope and the same system prompt text (sha256 `e04b38d2b8ac649e1428eb9dfee23606a3fd5a60862ffda0d9805d083c734138`).
+
+| Month | Run folder | Hours | Started (UTC) | Finished (UTC) | Calls | Fallback hours | Clamped hours | Cost |
+|---|---|---|---|---|---|---|---|---|
+| phase 2 (`phase2`) | `runs/live/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261023T173627Z` | 719 | 17:36:31 | 18:09:54 | 719 | 0 | 20 | $0.504864 |
+| tuning June (`tuning-06`) | `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_06_agent_citylearn_20261023T180957Z` | 719 | 18:10:02 | 18:44:31 | 719 | 0 | 32 | $0.512738 |
+| tuning July (`tuning-07`) | `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261023T184434Z` | 743 | 18:44:39 | 19:19:22 | 743 | 0 | 10 | $0.517810 |
+| tuning August (`tuning-08`) | `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_08_agent_citylearn_20261023T191925Z` | 743 | 19:19:30 | 19:54:36 | 743 | 0 | 3 | $0.524397 |
+
+Every district KPI, from each run's `result.json`:
+
+| CityLearn KPI (district) | phase 2 | tuning June | tuning July | tuning August |
+|---|---|---|---|---|
+| all_time_peak_average | 0.958592 | 0.851632 | 0.844480 | 0.852413 |
+| annual_normalized_unserved_energy_total | 0.019865 | 0.000000 | 0.000000 | 0.000000 |
+| carbon_emissions_total | 0.945198 | 0.965860 | 0.970715 | 0.953043 |
+| cost_total | 0.904058 | 0.910940 | 0.920207 | 0.903379 |
+| daily_one_minus_load_factor_average | 0.961441 | 0.948142 | 0.952911 | 0.952915 |
+| daily_peak_average | 0.907082 | 0.882030 | 0.886171 | 0.884998 |
+| discomfort_cold_delta_average | 0.354966 | 0.214689 | 0.226588 | 0.357126 |
+| discomfort_cold_delta_maximum | 2.561125 | 2.659330 | 2.188906 | 2.624215 |
+| discomfort_cold_delta_minimum | 0.000000 | 0.000000 | 0.000000 | 0.000000 |
+| discomfort_cold_proportion | 0.025830 | 0.006948 | 0.006162 | 0.022337 |
+| discomfort_hot_delta_average | 0.258229 | 0.397395 | 0.274704 | 0.153318 |
+| discomfort_hot_delta_maximum | 5.171015 | 2.306789 | 1.794235 | 1.391905 |
+| discomfort_hot_delta_minimum | 0.000000 | 0.000000 | 0.000000 | 0.000000 |
+| discomfort_hot_proportion | 0.011552 | 0.010428 | 0.001590 | 0.000000 |
+| discomfort_proportion | 0.037382 | 0.017376 | 0.007752 | 0.022337 |
+| electricity_consumption_total | 0.954463 | 0.970355 | 0.972076 | 0.955470 |
+| monthly_one_minus_load_factor_average | 1.003726 | 0.975378 | 0.974589 | 1.062104 |
+| one_minus_thermal_resilience_proportion | 0.369841 | none | none | none |
+| power_outage_normalized_unserved_energy_total | 0.686222 | 0.000000 | 0.000000 | 0.000000 |
+| ramping_average | 0.996582 | 0.971539 | 0.968505 | 1.008546 |
+| zero_net_energy | 0.951962 | 0.973819 | 0.971484 | 0.953521 |
+
+**Two statements were wrong.**
+- **0.11.0:** "No live model calls were made for this release" (and in `docs/HISTORY.md`, "No live model calls were made"). The line was committed at 17:29:04 UTC, before any of these runs. The smoke run started 5 minutes 54 seconds later and the four months followed, on the same code. The release was merged and tagged on 2026-10-24 (20:26 and 20:28 UTC) with the line unchanged. It was wrong for the release as published.
+- **0.15.0:** the 0.13.0 tables "showed the 0.10.0 Haiku v8 live run as a stand-in because no Haiku v9 run existed on tuning July." A Haiku v9 run on tuning July had existed since 2026-10-23: `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261023T184434Z`. The 0.13.0 tables used a stand-in while that run was on disk, and 0.15.0 ran a second Haiku v9 month on tuning July without saying a first one existed.
+
+**When they ran, against git** (2026-10-23, UTC):
+- 16:54:17 and 16:54:37: the holdout chosen and sealed (`a5879a3`) and the v9 acceptance rule (`0560671`).
+- 17:29:03 to 17:29:04: the 0.11.0 commits, the peak diagnosis (`aba0157`), prompt version 9 and the v9 search (`91acede`), and docs and version (`6b75c7a`).
+- 17:34:58 to 19:54:36: the smoke run and the four months.
+- 21:22:12 to 23:11:47 (17:22 to 19:11 EDT): the three holdout months.
+- The next commit anywhere, in `git log --all` or the reflog, is 2026-10-24 20:18:37 UTC (prompt caching, `283ab66`, rebased as `40d35e2`).
+
+All five ran after every 0.11.0 commit and before the holdout runs, and no commit landed between them and the holdout runs. Replay rebuilds every hour's request (system prompt, observation and the v9 strategy in it) with the current code and fails if it differs from the recorded request; these five runs and the three holdout runs all pass. The holdout ran on the prompt, strategy and envelope committed before these runs.
+
+**No number from these runs reached a published result.** Every revision of README.md, CHANGELOG.md, HOLDOUT.md, `docs/` and `results/` in git history (47 revisions) was searched for the five folder names, their timestamps, their costs and every non-zero district KPI at six decimals, and README.md, CHANGELOG.md, HOLDOUT.md and `docs/*.md` for the four months' `cost_total` at four and three decimals. No folder name or timestamp appears. Every match is another source's number: 0.844480 (tuning July's all-time peak) in the rows of v9 scripted, Sonnet v10 and the 0.15.0 Haiku v9 run, which produced it too; 0.001590 (tuning July's too-warm share) in those rows and Haiku v10's; 0.007752 and 0.006162 in the Sonnet v10 rows; 2.188906 in the viewer, from the 0.15.0 Haiku v9 run; 0.369841, phase 2's thermal resilience, in `results/baseline`, which every phase 2 run shares; and in the baseline step files, one hourly building cost (0.006948) and one hourly carbon intensity that begins with the July run's cost (0.5178107...). The four and three decimal matches are other runs' numbers or longer numbers that begin with those digits. No file in the repository, in any commit, names these runs.
+
+**Two Haiku v9 runs on tuning July.** The 0.11.0 run and the 0.15.0 run (`runs/v9haiku/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T210024Z`) have the same prompt version and prompt text, the same envelope, the same dataset and 743 hours, and the same model id, effort and max tokens. They differ in the budget ($2.00 against $0.75; neither reached it, at $0.517810 and $0.352884), prompt caching (off against on: the same text sent as a plain string or as a cached block, billed differently), tool version (0.11.0 against 0.14.0) and date. Their observations are identical until the replies diverge: actions first differ at hour 9, and 606 of 743 hours have the same actions. On the KPIs that differ:
+
+| CityLearn KPI (district) | 0.11.0 run | 0.15.0 run | 0.15.0 minus 0.11.0 |
+|---|---|---|---|
+| cost_total | 0.920207 | 0.919662 | -0.000545 |
+| carbon_emissions_total | 0.970715 | 0.970061 | -0.000654 |
+| electricity_consumption_total | 0.972076 | 0.971466 | -0.000610 |
+| zero_net_energy | 0.971484 | 0.970837 | -0.000647 |
+| discomfort_proportion | 0.007752 | 0.007295 | -0.000457 |
+| discomfort_cold_proportion | 0.006162 | 0.005705 | -0.000457 |
+| discomfort_cold_delta_average | 0.226588 | 0.221983 | -0.004605 |
+| discomfort_hot_delta_average | 0.274704 | 0.275304 | +0.000600 |
+| discomfort_hot_delta_maximum | 1.794235 | 1.794917 | +0.000682 |
+| ramping_average | 0.968505 | 0.968514 | +0.000009 |
+| daily_peak_average | 0.886171 | 0.886178 | +0.000007 |
+| daily_one_minus_load_factor_average | 0.952911 | 0.953279 | +0.000368 |
+| monthly_one_minus_load_factor_average | 0.974589 | 0.974726 | +0.000137 |
+
+Equal in both: all_time_peak_average 0.844480, discomfort_hot_proportion 0.001590, discomfort_cold_delta_maximum 2.188906, the two minimums and both unserved energy totals 0, and thermal resilience none. These are two runs of one configuration, not a measurement of run-to-run spread. Every published number stays as it was: the 0.15.0 tables and the viewer keep the 0.15.0 run.
+
+**Every live run folder is now accounted for.** No CHANGELOG entry named a run folder by its full name before this release, so this table names each live run that an entry reports, by its path under `runs/` (the path, because `runs/v12` and `runs/v9haiku` each hold a folder named `..._20261110T210024Z`). The five runs above are named in this entry. Eight short runs that no entry reports (a 6-hour run in 0.2.0 and 24-hour runs from 0.3.0 to 0.10.0, $0.111544 together) are listed with reasons in [runs/UNPUBLISHED.md](runs/UNPUBLISHED.md).
+
+| Run folder | Hours | Cost | Reported in |
+|---|---|---|---|
+| `runs/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261021T164417Z` | 719 | $0.2310 | 0.3.0 (the 0.2.0 live month) |
+| `runs/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261021T185629Z` | 719 | $0.3934 | 0.3.0 |
+| `runs/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261021T204954Z` | 719 | $0.4720 | 0.4.0 |
+| `runs/live/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261022T153213Z` | 719 | $0.5740 | 0.6.0 |
+| `runs/live/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261022T175738Z` | 719 | $0.6329 | 0.7.0 |
+| `runs/live/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261022T222703Z` | 719 | $0.5315 | 0.8.0 |
+| `runs/live/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261023T135430Z` | 719 | $0.4607 | 0.9.0 |
+| `runs/live/citylearn_challenge_2023_phase_2_local_evaluation_agent_citylearn_20261023T160151Z` | 719 | $0.4182 | 0.10.0 (phase 2) |
+| `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_06_agent_citylearn_20261023T160150Z` | 719 | $0.4118 | 0.10.0 (tuning June) |
+| `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261023T160200Z` | 743 | $0.4229 | 0.10.0 (tuning July) |
+| `runs/live/citylearn_challenge_2023_phase_2_online_evaluation_1_month_08_agent_citylearn_20261023T160206Z` | 743 | $0.4288 | 0.10.0 (tuning August) |
+| `runs/holdout/citylearn_challenge_2023_phase_3_1_buildings_4_5_6_month_06_agent_citylearn_20261023T212209Z` | 719 | $0.5187 | 0.12.0 (`holdout-06`) |
+| `runs/holdout/citylearn_challenge_2023_phase_3_1_buildings_4_5_6_month_07_agent_citylearn_20261023T215850Z` | 743 | $0.5351 | 0.12.0 (`holdout-07`) |
+| `runs/holdout/citylearn_challenge_2023_phase_3_1_buildings_4_5_6_month_08_agent_citylearn_20261023T223522Z` | 743 | $0.5331 | 0.12.0 (`holdout-08`) |
+| `runs/v10/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T172307Z` | 24 | $0.1794 | 0.13.0 (smoke test, Sonnet v10) |
+| `runs/v10/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T172639Z` | 743 | $5.3566 | 0.13.0 (Sonnet v10) |
+| `runs/v10/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T175431Z` | 743 | $0.3831 | 0.13.0 (Haiku v10) |
+| `runs/v11/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T195023Z` | 24 | $0.1620 | 0.14.0 (smoke test, Sonnet v11) |
+| `runs/v11/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T195132Z` | 743 | $4.8587 | 0.14.0 (Sonnet v11) |
+| `runs/v11/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T201650Z` | 743 | $0.2698 | 0.14.0 (Haiku v11) |
+| `runs/v12/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T205859Z` | 24 | $0.0123 | 0.15.0 (smoke test, Haiku v12) |
+| `runs/v12/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T210024Z` | 743 | $0.3739 | 0.15.0 (Haiku v12) |
+| `runs/v9haiku/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T210024Z` | 743 | $0.3529 | 0.15.0 (Haiku v9) |
+
+**A check so this cannot recur silently** (`scripts/check_repo.py`): when `runs/` is on disk, every live run folder in it (a manifest whose supervisor kind is `live`) must be named in CHANGELOG.md by its path under `runs/` or listed in a row of `runs/UNPUBLISHED.md` with a reason, and not both. `runs/` stays out of git except `runs/UNPUBLISHED.md` (`.gitignore`), so the check runs where the runs are. Tests in `tests/test_repo_checks.py` show it failing on a run missing from both, on a listed run with no reason, on a run in both, on a run whose folder name matches but whose path does not, and on an unreadable manifest.
+
+**Also corrected in place, without rewriting:** one line under the 0.11.0 and 0.15.0 headings here and in `docs/HISTORY.md` points to this entry, and `docs/LIMITS.md` gains one line on the two tuning July runs. README.md's "How this was tested" has no number these runs change (the $11.9488 is 0.13.0 to 0.15.0 only), so only its version badge changes.
+
+Version 0.15.2 (`pyproject.toml`, `hyperbolic/__init__.py`, `docs/assets/version.js`, README.md badge).
+
 ## 0.15.1 (2026-11-11)
 
 This release changes presentation only. No model calls, no simulator runs, and no change to any result, strategy, envelope, tuned number or recorded run. `results/`, `holdout/` and `hyperbolic/data` are untouched, and every recorded run replays as before.
@@ -27,6 +137,8 @@ This release changes presentation only. No model calls, no simulator runs, and n
 Version 0.15.1 (`pyproject.toml`, `hyperbolic/__init__.py`, `docs/assets/version.js`).
 
 ## 0.15.0 (2026-11-10)
+
+Correction (0.15.2): see [the 0.15.2 entry](#0152-2026-11-11-record-correction).
 
 Question: is the value of the v9 strategy in the rules themselves, or in working them out in code? Prompt version 12 ("rules in words") is the version 11 observation, with no suggestion, and the version 11 system prompt plus the version 10 strategy section (the three numbered rules with their `StrategyParamsV9` numbers), worded as an instruction to apply that strategy every hour. Haiku only. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
 
@@ -652,6 +764,8 @@ Changes:
 - Version 0.12.0 (`pyproject.toml`, `hyperbolic/__init__.py`, `docs/assets/version.js`). No code, prompt, strategy, envelope or test changes.
 
 ## 0.11.0 (2026-10-23)
+
+Correction (0.15.2): see [the 0.15.2 entry](#0152-2026-11-11-record-correction).
 
 Goal: close the gap between the 0.10.0 live agent and its strategy on the all-time peak (July 0.8822 against scripted v8 0.8491, August 0.8940 against 0.8570) and the daily peak, bring August ramping (1.0157, the one KPI over the baseline) down, and set up a clean holdout that nothing in this release is tuned on. The envelope does not change. No live model calls are made for this release.
 

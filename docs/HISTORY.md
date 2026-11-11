@@ -529,6 +529,8 @@ Thermal resilience is scored only where there are outages: on the phase 2 month 
 
 ### Version 0.11.0
 
+Correction (0.15.2): see [the 0.15.2 entry](../CHANGELOG.md#0152-2026-11-11-record-correction).
+
 **Goal:** close the two gaps the 0.10.0 live months left, the all-time peak (July 0.8822 against scripted v8 0.8491, August 0.8940 against 0.8570, with the daily peak about 0.009 behind too) and August ramping (1.0157, the one KPI over the baseline), and set up a holdout nothing in this release is tuned on. The envelope is identical to 0.10.0. No live model calls were made: everything here is measured on recorded runs and offline controllers, and the published viewer still shows the 0.10.0 phase 2 run.
 
 **A holdout, chosen and sealed first** ([HOLDOUT.md](../HOLDOUT.md)). Every result so far is on data the project has looked at: phase 2 shaped the outage exception and the tuning months chose the strategy's numbers. CityLearn v3.0.2 ships no dataset that is both new to the project and fully compatible with it. Every 2023 set reuses the phase 2 or tuning data, and every other dataset has other actions or observations. The closest, chosen before any tuning, is **Buildings 4, 5 and 6 of `citylearn_challenge_2023_phase_3_1`**, June, July and August (`holdout-06`, `holdout-07`, `holdout-08`). It has the same actions and observations, new loads, occupancy, LSTM models, batteries and heat pumps, and stochastic outages. Its weather, tariff and carbon intensity are the tuning months', hour for hour, so it tests new buildings, not a new climate. `hyperbolic months` and `compare` refuse it without `--holdout-final`, the files are checked against a seal of hashes before scoring, and only the baseline has been run on it.
@@ -941,6 +943,8 @@ Haiku v11 (tuning July):
 - **Replays:** all three runs replay every hour with 0 API calls (24, 743 and 743).
 
 ### Version 0.15.0: rules in words
+
+Correction (0.15.2): see [the 0.15.2 entry](../CHANGELOG.md#0152-2026-11-11-record-correction).
 
 **Question:** is the value of the v9 strategy in the rules themselves, or in working them out in code? **On the one month tested, mostly in the rules, but not all of it.** Given the rules in words, Haiku closed 89 percent of the cost gap between no rules and rules computed in code. The remaining 0.008264 of `cost_total`, and most of the ramping gain, needed the computation.
 
