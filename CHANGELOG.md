@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.15.1 (2026-11-11)
+
+This release changes presentation only. No model calls, no simulator runs, and no change to any result, strategy, envelope, tuned number or recorded run. `results/`, `holdout/` and `hyperbolic/data` are untouched, and every recorded run replays as before.
+
+**A new front page.** README.md is rebuilt so a first-time visitor gets the finding, the proof and the demo in one screen: the finding with a chart of the tuning July ladder, a four-row holdout summary, a recording of the viewer, how it works, how it was tested, how to run it, the five limits that matter most, and links to the rest. It is 130 lines, down from 1,368.
+
+**Moved, word for word.** Every non-blank line of the 0.15.0 README is in the new README or one of four new files; only link targets (repointed at the file a heading moved to) and heading levels differ, and one heading is renamed ("How to run it" is now "Run it"). `scripts/check_moved.py` checks this against b94aac8: 1,080 lines, none missing.
+- `docs/HISTORY.md`: the README's "Results" section, every "Version 0.x" section, and the introduction's release summaries.
+- `docs/HOLDOUT_RESULTS.md`: "Holdout results", with the full holdout KPI table and its bullets.
+- `docs/LIMITS.md`: "Honest limits".
+- `docs/DESIGN.md`: "What the agent sees", "Tuning without peeking at the test month" and "How the safety envelope works", and with them "Dataset", "Baseline", "Model access and budget", "Watch it live", "The replay viewer" and "Tests", and the introduction's description of the project and of the published viewer.
+- Stayed in the README unchanged: "Why it is built this way" (now under "How it works"), the Windows and macOS or Linux steps and the command list (under "Run it"), the simulator line, and "Credits and license".
+
+**Links.** Every link to a heading that moved now points at its new file, in README.md, HOLDOUT.md and the four new files (HOLDOUT.md's link to the holdout results now goes to `docs/HOLDOUT_RESULTS.md`). CHANGELOG.md and `docs/index.html` had no links to README headings.
+
+**New files:**
+- `scripts/make_ladder_chart.py` draws `docs/assets/ladder.png`, "Where the savings come from", from the recorded tuning July runs (`hyperbolic months` output and each run's `result.json`) and writes the numbers beside it in `docs/assets/ladder.json`: Haiku v11 0.7 percent, Sonnet v11 5.4 percent, Haiku v12 7.2 percent, Haiku v9 8.0 percent and v9 scripted 8.0 percent saved on `cost_total`, the values in the 0.14.0 and 0.15.0 tables.
+- `scripts/make_viewer_gif.py` records the published viewer playing tuning July at 60x in headless Chromium for about 8 seconds, as `docs/assets/viewer.gif` (900 px wide). Playwright, Chromium, Pillow and matplotlib are dev tools for these two scripts, not package dependencies.
+- `tests/test_ladder_chart.py`: the chart's numbers equal the 0.14.0 and 0.15.0 tables, and the recorded runs when they are on disk; the README's finding uses the chart's percents; the README's spend figure is the sum of the recorded run costs.
+
+**Repository checks** (`scripts/check_repo.py`): en dashes are now refused as well as em dashes; README.md must be under 200 lines, show both images, which must exist, and carry the package version in its badge; and every relative link and image in README.md, HOLDOUT.md, CHANGELOG.md and the four new files must point at a file that exists and, where it names a heading, a heading that exists there. Tests in `tests/test_repo_checks.py` show each check failing on a broken tree.
+
+**One number stated two ways.** The README gives the 0.13.0 to 0.15.0 API spend as $11.9488, the sum of the nine recorded runs' costs ($11.948801). The 0.15.0 notes give $11.9487, the sum of each run's cost rounded to four decimals first. Both are kept.
+
+Version 0.15.1 (`pyproject.toml`, `hyperbolic/__init__.py`, `docs/assets/version.js`).
+
 ## 0.15.0 (2026-11-10)
 
 Question: is the value of the v9 strategy in the rules themselves, or in working them out in code? Prompt version 12 ("rules in words") is the version 11 observation, with no suggestion, and the version 11 system prompt plus the version 10 strategy section (the three numbered rules with their `StrategyParamsV9` numbers), worded as an instruction to apply that strategy every hour. Haiku only. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.

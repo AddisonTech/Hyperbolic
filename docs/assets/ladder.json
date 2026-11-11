@@ -1,0 +1,43 @@
+{
+  "title": "Where the savings come from",
+  "subtitle": "CityLearn 2023, one tuning month, cost_total against the no-control baseline",
+  "kpi": "cost_total",
+  "month": "tuning-07",
+  "rows": [
+    {
+      "key": "haiku v11",
+      "label": "Haiku, no rules (v11)",
+      "cost_total": 0.992758,
+      "saved_percent": 0.7242,
+      "source": "runs/v12/months_tuning07.json and runs/v11/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T201650Z/result.json"
+    },
+    {
+      "key": "sonnet v11",
+      "label": "Sonnet, no rules (v11, 0.14.0 blind)",
+      "cost_total": 0.945797,
+      "saved_percent": 5.4203,
+      "source": "runs/v11/months_tuning07.json and runs/v11/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T195132Z/result.json"
+    },
+    {
+      "key": "haiku v12",
+      "label": "Haiku, rules in words (v12)",
+      "cost_total": 0.927926,
+      "saved_percent": 7.2074,
+      "source": "runs/v12/months_tuning07.json and runs/v12/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T210024Z/result.json"
+    },
+    {
+      "key": "haiku v9",
+      "label": "Haiku, rules computed in code (v9)",
+      "cost_total": 0.919662,
+      "saved_percent": 8.0338,
+      "source": "runs/v12/months_tuning07.json and runs/v9haiku/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261110T210024Z/result.json"
+    },
+    {
+      "key": "v9 scripted",
+      "label": "v9 scripted (no model)",
+      "cost_total": 0.919906,
+      "saved_percent": 8.0094,
+      "source": "runs/v12/months_tuning07.json and runs/v11/months_tuning07.json"
+    }
+  ]
+}

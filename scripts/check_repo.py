@@ -1,8 +1,13 @@
 """Repository rules that tests cannot see.
 
-  - no em dash characters in any tracked text file
+  - no em or en dash characters in any tracked text file
   - nothing that looks like an API key
   - docs/data/viewer.js holds exactly the data in docs/data/viewer.json
+  - README.md is under 200 lines, shows docs/assets/ladder.png and docs/assets/viewer.gif (both on
+    disk), and its version badge is the package version
+  - every relative link and image in README.md, HOLDOUT.md, CHANGELOG.md and the four docs files
+    (docs/HISTORY.md, docs/HOLDOUT_RESULTS.md, docs/LIMITS.md, docs/DESIGN.md) points at a file that
+    exists and, where it names a heading, a heading that exists in that file
 """
 
 from __future__ import annotations
@@ -15,7 +20,84 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EM_DASH = chr(0x2014)
+EN_DASH = chr(0x2013)
 KEY_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}")
+
+README_MAX_LINES = 200
+README_IMAGES = ["docs/assets/ladder.png", "docs/assets/viewer.gif"]
+LINKED_DOCS = ["README.md", "HOLDOUT.md", "CHANGELOG.md", "docs/HISTORY.md", "docs/HOLDOUT_RESULTS.md",
+               "docs/LIMITS.md", "docs/DESIGN.md"]
+LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)\)")
+FENCE = re.compile(r"^\s*```")
+
+
+def slug(heading: str) -> str:
+    """The anchor GitHub gives a heading: lower case, punctuation dropped, spaces to hyphens."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def anchors(path: Path) -> set[str]:
+    found, seen, fenced = set(), {}, False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        m = None if fenced else re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line)
+        if m:
+            base = slug(m.group(1))
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            found.add(base if n == 0 else f"{base}-{n}")
+    return found
+
+
+def links(path: Path) -> list[tuple[int, str]]:
+    out, fenced = [], False
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if not fenced:
+            out.extend((n, m.group(1)) for m in LINK.finditer(line))
+    return out
+
+
+def link_errors(root: Path = ROOT) -> list[str]:
+    """Every relative link in the front page and the docs it points to resolves, anchors included."""
+    errors = []
+    for rel in LINKED_DOCS:
+        path = root / rel
+        if not path.exists():
+            errors.append(f"{rel}: missing")
+            continue
+        for n, target in links(path):
+            if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I):
+                continue  # http, https, mailto
+            file_part, _, anchor = target.partition("#")
+            dest = (path.parent / file_part).resolve() if file_part else path
+            if not dest.exists():
+                errors.append(f"{rel}:{n}: link to {target}: no such file")
+            elif anchor and (dest.suffix != ".md" or anchor not in anchors(dest)):
+                errors.append(f"{rel}:{n}: link to {target}: no such heading")
+    return errors
+
+
+def readme_errors(root: Path = ROOT) -> list[str]:
+    errors = []
+    text = (root / "README.md").read_text(encoding="utf-8")
+    count = len(text.splitlines())
+    if count >= README_MAX_LINES:
+        errors.append(f"README.md: {count} lines, the limit is under {README_MAX_LINES}")
+    targets = {t for _, t in links(root / "README.md")}
+    for image in README_IMAGES:
+        if not (root / image).is_file():
+            errors.append(f"{image}: missing")
+        if image not in targets:
+            errors.append(f"README.md: does not show {image}")
+    version = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(encoding="utf-8"), re.M).group(1)
+    if f"badge/version-{version}-" not in text:
+        errors.append(f"README.md: the version badge does not say {version}")
+    return errors
 
 
 def tracked_files() -> list[Path]:
@@ -34,6 +116,8 @@ def main() -> int:
         for n, line in enumerate(text.splitlines(), 1):
             if EM_DASH in line:
                 errors.append(f"{rel}:{n}: em dash")
+            if EN_DASH in line:
+                errors.append(f"{rel}:{n}: en dash")
             if KEY_PATTERN.search(line):
                 errors.append(f"{rel}:{n}: looks like an API key")
     data_json = ROOT / "docs/data/viewer.json"
@@ -44,6 +128,8 @@ def main() -> int:
         if not js.startswith(prefix) or json.loads(js[len(prefix):].rstrip().rstrip(";")) != json.loads(
                 data_json.read_text(encoding="utf-8")):
             errors.append("docs/data/viewer.js does not match docs/data/viewer.json; rerun hyperbolic compare")
+    errors += readme_errors()
+    errors += link_errors()
     for e in errors:
         print(e)
     print("repo checks: " + ("FAILED" if errors else "passed"))
