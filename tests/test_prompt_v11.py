@@ -163,6 +163,16 @@ def test_a_v11_request_names_no_strategy():
         assert system_text(req) == system_prompt_v11(env.config, BUILDINGS)
 
 
+def test_an_opus_v11_request_differs_from_sonnet_only_in_the_model():
+    # 0.16.0: Opus blind reuses the 0.14.0 blind setup, changing only the model.
+    st, ctx, look, env, v11 = _obs(version=11)
+    for cache in (False, True):
+        opus = build_request(v11, env.config, BUILDINGS, "opus", prompt_version=11, prompt_cache=cache)
+        sonnet = build_request(v11, env.config, BUILDINGS, "sonnet", prompt_version=11, prompt_cache=cache)
+        assert opus.pop("model") == "claude-opus-5-5" and sonnet.pop("model") == "claude-sonnet-5-5"
+        assert opus == sonnet
+
+
 def test_v11_system_prompt_is_long_enough_to_cache():
     # Sonnet 5.5 and Haiku 5.5 cache a prefix of 512 tokens or more. Plain English runs about 4 characters a
     # token, so this is about 720 tokens before the reply schema; the smoke test reads the cache hits.

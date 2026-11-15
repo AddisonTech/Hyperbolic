@@ -26,13 +26,15 @@ from . import district as dc
 KEY_ENV_VARS = ("HYPERBOLIC_ANTHROPIC_KEY", "TRIAGE_ANTHROPIC_KEY")
 
 # USD per million tokens, Anthropic's published rates. input is uncached input; a cache write (5
-# minute TTL) bills at 1.25x the input price; a cache read at 0.1x on Haiku 5.5 and 0.05x on Sonnet 5.5.
-# Haiku 5.5's rates are for prompts up to 100,000 tokens, far above any request here.
+# minute TTL) bills at 1.25x the input price; a cache read at 0.1x on Haiku 5.5 and 0.05x on Sonnet 5.5
+# and Opus 5.5. Haiku 5.5's rates are for prompts up to 100,000 tokens, far above any request here.
 MODELS = {
     "haiku": {"id": "claude-haiku-5-5", "input_per_mtok": 0.10, "cache_write_per_mtok": 0.125,
               "cache_read_per_mtok": 0.01, "output_per_mtok": 0.50},
     "sonnet": {"id": "claude-sonnet-5-5", "input_per_mtok": 2.00, "cache_write_per_mtok": 2.50,
                "cache_read_per_mtok": 0.10, "output_per_mtok": 10.00},
+    "opus": {"id": "claude-opus-5-5", "input_per_mtok": 4.00, "cache_write_per_mtok": 5.00,
+             "cache_read_per_mtok": 0.20, "output_per_mtok": 20.00},
 }
 DEFAULT_MODEL = "haiku"
 DEFAULT_BUDGET_USD = 2.00

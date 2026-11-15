@@ -99,9 +99,12 @@ def test_prompt_is_long_enough_to_cache(version):
 
 def test_prices_in_the_table():
     # Anthropic's published rates per million tokens (platform.claude.com pricing, checked 2026-11-10):
-    # a 5 minute cache write is 1.25x input; a cache read 0.1x on Haiku 5.5 and 0.05x on Sonnet 5.5.
+    # a 5 minute cache write is 1.25x input; a cache read 0.1x on Haiku 5.5 and 0.05x on Sonnet 5.5
+    # and Opus 5.5 (Opus 5.5 added 2026-11-15).
     want = {"haiku": ("claude-haiku-5-5", 0.10, 0.125, 0.01, 0.50),
-            "sonnet": ("claude-sonnet-5-5", 2.00, 2.50, 0.10, 10.00)}
+            "sonnet": ("claude-sonnet-5-5", 2.00, 2.50, 0.10, 10.00),
+            "opus": ("claude-opus-5-5", 4.00, 5.00, 0.20, 20.00)}
+    assert set(MODELS) == set(want)
     for key, (model_id, inp, write, read, out) in want.items():
         p = MODELS[key]
         assert p["id"] == model_id
