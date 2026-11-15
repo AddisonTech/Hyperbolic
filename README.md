@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/AddisonTech/Hyperbolic/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AddisonTech/Hyperbolic/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.15.2-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.16.0-informational.svg)](CHANGELOG.md)
 [![Live viewer](https://img.shields.io/badge/viewer-live-8b7ff0.svg)](https://addisontech.github.io/Hyperbolic/)
 
 Claude makes the hourly supervisory calls on cooling, batteries and hot water for a simulated district in [CityLearn](https://github.com/citylearn-project/CityLearn), and a deterministic safety envelope checks every move before it reaches the building. Every result is scored by CityLearn's own KPI evaluation.
@@ -16,6 +16,18 @@ Claude makes the hourly supervisory calls on cooling, batteries and hot water fo
 With no rules, Haiku cut cost by 0.7 percent and Sonnet by 5.4 percent. With the strategy's rules in words, Haiku cut it by 7.2 percent. With the rules computed in code and handed over as an action, Haiku cut it by 8.0 percent, level with the scripted strategy's 8.0 percent.
 
 This is one tuning month, one run per prompt, on a month the strategy's numbers were chosen on; the numbers come from `hyperbolic months` and the recorded runs ([0.14.0](docs/HISTORY.md#version-0140-blind-mode), [0.15.0](docs/HISTORY.md#version-0150-rules-in-words)).
+
+The biggest model did not find it on its own either. With no rules, Opus cut cost by 6.1 percent, 24.9 percent of the way from Sonnet's 5.4 to the scripted strategy's 8.0, the reading pre-registered as partial ([0.16.0](CHANGELOG.md#0160-2026-11-15)):
+
+| Tuning July | cost_total | cost saved | matches the v9 rules (all three devices) |
+|---|---|---|---|
+| Haiku, no rules | 0.992758 | 0.7% | 38.3% |
+| Sonnet, no rules | 0.945797 | 5.4% | 37.8% |
+| **Opus, no rules (0.16.0)** | **0.939348** | **6.1%** | **38.1%** |
+| Haiku, rules in words | 0.927926 | 7.2% | |
+| Haiku, rules computed in code | 0.919662 | 8.0% | |
+| Sonnet, free to override the rules | 0.920084 | 8.0% | |
+| v9 scripted | 0.919906 | 8.0% | |
 
 ## Holdout
 
@@ -57,10 +69,11 @@ flowchart LR
 
 ## How this was tested
 
-- **Pass or fail rules committed before the runs.** The acceptance rule or readings for 0.11.0, 0.13.0, 0.14.0 and 0.15.0 were written into the [CHANGELOG](CHANGELOG.md) and committed before the runs they judge.
+- **Pass or fail rules committed before the runs.** The acceptance rule or readings for 0.11.0, 0.13.0, 0.14.0, 0.15.0 and 0.16.0 were written into the [CHANGELOG](CHANGELOG.md) and committed before the runs they judge.
 - **Holdout sealed and scored once.** Its files are pinned by sha256 in [HOLDOUT.md](HOLDOUT.md), the tools refuse it without `--holdout-final`, and it was scored once, in 0.12.0.
 - **Every hour replays exactly with zero model calls.** `hyperbolic replay` re-runs a recorded run from its files with no model or simulator calls and fails if any decision or action differs.
 - **Total API spend for 0.13.0 to 0.15.0: $11.9488**, the sum of the nine recorded runs' costs ($11.948801), under the $15.00 cap. The release notes round each run first and give $11.9487.
+- **API spend for 0.16.0: $10.8659**, the cost check and the Opus month ($10.865866), under its $25.00 hard stop, which the runner enforces before every call.
 
 ## Run it
 
@@ -109,7 +122,7 @@ python -m hyperbolic run && python -m hyperbolic compare
 - **Simulator only.** Beating CityLearn's reference is evidence worth investigating, not proof of field savings.
 - **The reference is a modest bar.** No storage use and an ideal-load heat pump; any sensible battery schedule should beat it on cost.
 - **On the holdout the agent adds nothing measurable over its strategy.** Haiku v9 is within 0.0006 of v9 scripted on every KPI and slightly behind it on mean cost, emissions and the all-time peak.
-- **The experiments ran on one tuning month, with single runs.** 0.13.0 to 0.15.0 ran on tuning July, a month the strategy was tuned on, which favors it, and run-to-run spread was not measured.
+- **The experiments ran on one tuning month, with single runs.** 0.13.0 to 0.16.0 ran on tuning July, a month the strategy was tuned on, which favors it, and run-to-run spread was not measured.
 - **Hourly supervision only.** One decision per hour, three devices per building.
 
 Every limit, with what each experiment does and does not show: [docs/LIMITS.md](docs/LIMITS.md).

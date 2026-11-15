@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.0 (unreleased)
+## 0.16.0 (2026-11-15)
 
 Question: does the biggest model find the engineering on its own? Opus (`claude-opus-5-5`) in blind mode, prompt version 11 with no strategy given, on tuning July (`tuning-07`), the month of the 0.14.0 blind runs. Everything but the model is the 0.14.0 setup, from the Sonnet v11 and Haiku v11 manifests: prompt version 11, the same envelope, effort low, 2,000 max tokens, prompt caching on, all 743 hours. The dataset's seed is in its schema (`random_seed` 2023, the schema pinned by sha256), not in a run flag. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
 
@@ -12,6 +12,102 @@ Question: does the biggest model find the engineering on its own? Opus (`claude-
 **Agreement with the v9 rules** is reported for Opus beside Sonnet v11 and Haiku v11, the same measure as 0.14.0: the share of building-hours where the model's action is within 0.002 (cooling) or 0.005 (tank and battery) of the v9 strategy's action for the same state (`shadow_strategy`, worked out in code every hour and never sent), per device and with all three at once, `null` counting as `baseline_action` on either side, an `end_trim` counting as a cooling disagreement, and unusable replies left out and counted separately. Agreement does not decide the reading.
 
 **Spend: a hard stop at $25.00 for this release, enforced in code.** First a cost check: the first 3 days (71 hours, the tool's length for 3 days, as 743 is for 31) of tuning July with prompt caching on. If the full month projected from it (its cost / 71 x 743) is over $22.00, the month does not run and no reading is given. Otherwise the month runs with its budget set to $25.00 minus what the cost check spent, so the two together cannot pass $25.00. The runner checks every call's worst case (the full request priced as uncached input, the cached prefix as a cache write, and the full 2,000 output tokens) against what is left before making it; once a call could pass the budget, no further call is made and every remaining hour keeps the baseline action. A month that reaches the stop is reported with its numbers as stopped by the budget, and no reading is given.
+
+**Order of work, in git** (2026-11-15, EST):
+- **7f5c7b4 (17:34:39):** the readings above.
+- **e9aebe2 (17:35:47):** Opus 5.5 in the model table and its tests.
+- **017b07d (17:36:05):** the cost check stated as 71 hours, the tool's length for 3 days (a run of two days or more must be a whole number of days less one hour; 72 is refused). The first version said 72 hours and a projection over 72; it was corrected before any live call.
+- **The cost check:** started at 17:36:11, 6 seconds after the last commit. **The month:** started at 17:39:49 and finished at 18:11:16.
+
+**Runs, both on tuning July, Opus (`claude-opus-5-5`), prompt version 11, effort low, 2,000 max tokens, prompt caching on:**
+
+| Run folder | Hours | Calls | Fallback hours | Clamped hours | Budget | Cost |
+|---|---|---|---|---|---|---|
+| `runs/v11opus/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261115T223607Z` (cost check) | 71 | 71 | 0 | 6 | $3.00 | $0.956516 |
+| `runs/v11opus/citylearn_challenge_2023_phase_2_online_evaluation_1_month_07_agent_citylearn_20261115T223945Z` (the month) | 743 | 743 | 0 | 45 | $24.043484 | $9.909350 |
+
+**Cost check:** $0.956516 for 71 hours puts the month at $10.0097 ($0.956516 / 71 x 743), under $22.00, so the month ran, with its budget set to $25.00 minus $0.956516. It cost $9.909350 and never reached the stop (no hour skipped for budget).
+
+**Result: Partial.** Opus blind's `cost_total` is 0.939348 (6.07 percent saved), 0.006449 below Sonnet blind's 0.945797. That closes 24.9 percent of the 0.025891 gap to v9 scripted (0.919906); finding the engineering needed 0.922495 or lower. Opus is also behind Haiku with the rules in words (0.927926).
+
+**Agreement with the v9 rules** (`shadow_strategy`, the same state every hour; 2,229 building-hours per run, no unusable replies in any):
+
+| Device | Opus v11 | Sonnet v11 (0.14.0) | Haiku v11 (0.14.0) |
+|---|---|---|---|
+| cooling (within 0.002) | 70.3% (1,568) | 68.9% (1,535) | 64.3% (1,433) |
+| dhw (within 0.005) | 92.6% (2,064) | 97.3% (2,168) | 98.9% (2,204) |
+| battery (within 0.005) | 54.3% (1,210) | 54.8% (1,222) | 59.0% (1,314) |
+| all three at once | 38.1% (849) | 37.8% (842) | 38.3% (854) |
+
+**Every KPI on tuning July** (`hyperbolic months`, numpy 1.26.4; v9 scripted is not a model result):
+
+| CityLearn KPI (district) | baseline | **Opus blind (v11)** | Sonnet blind (v11, 0.14.0) | Haiku blind (v11, 0.14.0) | Haiku rules in words (v12, 0.15.0) | Haiku rules computed in code (v9, 0.15.0) | Sonnet free to override (v10, 0.13.0) | v9 scripted |
+|---|---|---|---|---|---|---|---|---|
+| cost_total | 1.000000 | **0.939348** | 0.945797 | 0.992758 | 0.927926 | 0.919662 | 0.920084 | 0.919906 |
+| carbon_emissions_total | 1.000000 | **0.999129** | 1.012447 | 1.014709 | 0.976172 | 0.970061 | 0.970509 | 0.970308 |
+| electricity_consumption_total | 1.000000 | **0.997652** | 1.010680 | 1.014323 | 0.975429 | 0.971466 | 0.971906 | 0.971704 |
+| discomfort_proportion | 0.064481 | **0.012564** | 0.020628 | 0.062652 | 0.006910 | 0.007295 | 0.007752 | 0.007295 |
+| too cool (discomfort_cold_proportion) | 0.061374 | **0.012107** | 0.018581 | 0.059545 | 0.004333 | 0.005705 | 0.006162 | 0.005705 |
+| too warm (discomfort_hot_proportion) | 0.003107 | **0.000457** | 0.002047 | 0.003107 | 0.002577 | 0.001590 | 0.001590 | 0.001590 |
+| ramping_average | 1.000000 | **0.918411** | 1.082070 | 1.039499 | 1.031187 | 0.968514 | 0.968498 | 0.968052 |
+| daily_peak_average | 1.000000 | **0.839006** | 0.959816 | 0.975590 | 0.916517 | 0.886178 | 0.885031 | 0.885031 |
+| all_time_peak_average | 1.000000 | **0.851416** | 1.000024 | 1.000024 | 0.887329 | 0.844480 | 0.844480 | 0.844480 |
+| daily_one_minus_load_factor_average | 1.000000 | **0.906036** | 0.980215 | 0.976418 | 0.971457 | 0.953279 | 0.951609 | 0.951823 |
+| power_outage_normalized_unserved_energy_total | 0.000000 | **0.000000** | 0.000000 | 0.000000 | 0.000000 | 0.000000 | 0.000000 | 0.000000 |
+| clamped hours | 0 | 45 | 38 | 63 | 83 | 10 | 10 | 10 |
+| fallback hours | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 0 |
+| model cost | none | $9.909350 | $4.8587 | $0.2698 | $0.3739 | $0.3529 | $5.3566 | none |
+
+- **Opus blind against v9 scripted:** behind on cost (+0.019442), emissions (+0.028821), grid import (+0.025948), discomfort (+0.005269), too cool (+0.006402) and the all-time peak (+0.006936). **Ahead on ramping (0.918411 against 0.968052), the daily peak (0.839006 against 0.885031), load factor (0.906036 against 0.951823) and too warm (0.000457 against 0.001590).** Level on unserved energy (no outage on this month).
+- **Opus blind against Sonnet blind:** ahead on every KPI, level on unserved energy.
+- **Opus blind against the baseline:** ahead on every KPI, level on unserved energy; emissions only just (0.999129).
+- **No reply fell back**; 45 hours were clamped (Sonnet blind 38, Haiku blind 63, v9 scripted 10).
+
+**Attribution** (`scripts/analyze_free_mode.py`, numpy 1.26.4). Each departure from the shadow strategy is sorted into the 0.13.0 classes, put back to the strategy's action and the month resimulated with zero model calls. + means the departures made it worse. The control replay reproduces the run's KPIs exactly, putting every departure back reproduces v9 scripted exactly ($75.8602 and 1,038.712 kg), and the logged `shadow_strategy` matches the strategy worked out again on every recorded observation, all 743 hours.
+
+| Departures from the shadow strategy (building-hours, hours) | $ | kg CO2 | cost | emissions | discomfort | ramping | daily peak | all-time peak |
+|---|---|---|---|---|---|---|---|---|
+| `precool`: cooled above the strategy before the day's top-price hours (68, 49) | +0.20 | +2.79 | +0.0027 | +0.0029 | -0.0016 | +0.0037 | +0.0056 | +0.0000 |
+| `trim_not_started`: no trim in an occupied, overcooled room where the strategy trims (437, 376) | +1.43 | +18.16 | +0.0150 | +0.0147 | +0.0102 | -0.0084 | +0.0028 | -0.0056 |
+| `trim_shallower`: a shallower trim than the strategy's (62, 54) | +0.14 | +1.64 | +0.0015 | +0.0014 | +0.0000 | -0.0009 | +0.0012 | +0.0000 |
+| `trim_deeper`: a deeper trim than the strategy's (64, 53) | -0.27 | -2.60 | -0.0028 | -0.0021 | -0.0052 | +0.0030 | -0.0049 | -0.0296 |
+| `trim_unwanted`: a trim where the strategy has none (6, 6) | -0.06 | -0.65 | -0.0008 | -0.0007 | +0.0000 | -0.0011 | -0.0022 | +0.0000 |
+| `trim_ended_early`: ended a held trim early with end_trim (4, 4) | +0.09 | +1.19 | +0.0010 | +0.0010 | +0.0005 | +0.0004 | +0.0001 | +0.0000 |
+| `extra_cooling`: cooled above the strategy at any other time (10, 8) | +0.01 | +0.12 | +0.0001 | +0.0001 | +0.0005 | +0.0006 | +0.0000 | +0.0000 |
+| `warm_skipped`: less than the strategy's extra cooling in a warm room (11, 11) | -0.01 | -0.12 | -0.0001 | -0.0001 | +0.0005 | -0.0001 | -0.0002 | +0.0000 |
+| `top_discharge_short`: discharged less than the strategy in a top-price hour (97, 49) | +0.55 | +0.28 | +0.0076 | +0.0004 | +0.0000 | -0.0152 | -0.0104 | +0.0000 |
+| `top_discharge_over`: discharged more than the strategy in a top-price hour (79, 45) | -0.14 | +1.44 | -0.0015 | +0.0016 | +0.0000 | -0.0097 | -0.0163 | +0.0000 |
+| `shave_skipped`: skipped or cut a peak-shaving discharge (60, 35) | +0.01 | +0.50 | +0.0001 | +0.0005 | +0.0000 | +0.0030 | -0.0027 | +0.0000 |
+| `charge_skipped`: charged less than the strategy in a charging hour (314, 126) | -0.10 | -1.20 | -0.0009 | -0.0008 | +0.0000 | -0.0225 | -0.0010 | +0.0000 |
+| `charge_over`: charged more than the strategy in a charging hour (93, 47) | -0.23 | +1.43 | -0.0033 | +0.0014 | +0.0000 | -0.0093 | -0.0074 | +0.0000 |
+| `charge_off_plan`: charged when the strategy holds or only stores solar (288, 127) | -0.19 | +6.03 | -0.0016 | +0.0060 | +0.0000 | -0.0297 | -0.0385 | -0.0020 |
+| `discharge_off_plan`: discharged when the strategy does not (93, 53) | +0.01 | +0.29 | +0.0002 | +0.0005 | +0.0000 | -0.0085 | +0.0014 | +0.0609 |
+| `dhw_used`: used the hot water tank (the strategy leaves it at 0) (165, 84) | +0.31 | +9.16 | +0.0040 | +0.0087 | +0.0000 | +0.0092 | -0.0091 | +0.0000 |
+| `small`: differed from the strategy by less than the 0.10.0 class tolerances (1999, 506) | +0.00 | +0.04 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | +0.0000 | -0.0000 |
+| **Every departure** | +1.58 | +31.53 | +0.0194 | +0.0288 | +0.0053 | -0.0496 | -0.0460 | +0.0069 |
+
+- **What lost money:** trims not started (+$1.43, and +0.0102 discomfort, more than its whole +0.0053), short top-price discharges (+$0.55), the hot water tank (+$0.31, +9.16 kg), pre-cooling (+$0.20), shallower trims (+$0.14), trims ended early (+$0.09) and three classes at $0.01.
+- **What made money, and what it cost elsewhere:** deeper trims (-$0.27, and -0.0052 discomfort and -0.0296 all-time peak), extra charging (-$0.23, but +1.43 kg), off-plan grid charging (-$0.19, but +6.03 kg), more top-price discharge (-$0.14, but +1.44 kg), less charging (-$0.10), unwanted trims (-$0.06) and less warm-room cooling (-$0.01).
+- **Where Opus beat the strategy:** on ramping (-0.0496 together), the daily peak (-0.0460) and load factor (-0.0458). Ramping and the daily peak came mostly from its battery departures: off-plan charging (-0.0297 and -0.0385), less charging (-0.0225 ramping), short top-price discharges (-0.0152 and -0.0104) and more top-price discharge (-0.0097 and -0.0163). Off-plan discharges cost +0.0609 on the all-time peak.
+- **The classes do not add up to the whole.** They sum to +$1.77 while every departure together costs +$1.58: each class is measured with all its other departures in place.
+- **In dollars over the month** (CityLearn's hourly cost summed over the buildings): v9 scripted $75.86 and 1,038.7 kg, Opus blind $77.44 and 1,070.2 kg.
+
+**The numpy found in the environment.** On 2026-11-11 at 11:17 EST, installing matplotlib 3.11.2 for the 0.15.1 chart scripts upgraded numpy in the working environment to 2.5.4 (its contourpy 1.4.0 needs numpy 2), against the package's `numpy>=1.24,<2`. CI installs numpy below 2 and was not affected. Every 0.13.0 to 0.15.0 run ran before that install; both Opus runs ran under numpy 2.5.4. It showed when v9 scripted, resimulated under 2.5.4, came out 0.000001 to 0.000006 off its published values on six KPIs (`cost_total` 0.919907). What was done, with no model calls:
+- **The pin is restored.** The working environment is back on numpy 1.26.4, and the chart scripts' packages (matplotlib, contourpy, cycler, fonttools, kiwisolver, pyparsing, Pillow, Playwright, greenlet) moved to their own environment, `.venv-charts` (now in `.gitignore`), at the same versions, with numpy 2.5.4. There, `make_ladder_chart.py --check` passes and the chart redraws byte for byte as `docs/assets/ladder.png`, and `make_viewer_gif.py` records the viewer.
+- **v9 scripted is back:** under numpy 1.26.4 it equals its 0.15.0 values on every KPI (`cost_total` 0.919906), and so do the baseline and the 0.15.0 rows. The tables above are from numpy 1.26.4.
+- **Opus's recorded actions, scored again under numpy 1.26.4:** the month resimulated on CityLearn with each hour's recorded reply gives every KPI in the tables exactly as recorded; of the 20 district KPIs with a value (thermal resilience is none on this month) only `discomfort_hot_delta_maximum` moves (1.868968 to 1.868967). The reading does not depend on the numpy version.
+- **What Opus was shown:** rebuilt under numpy 1.26.4, 728 of the 743 requests are byte for byte what Opus was sent, and 15 differ, each in 1 or 2 characters; the first, at hour 170, is Building_3's `battery_range` lower end, -0.3481 as sent against -0.3482. Every one of the 71 cost check requests is identical, and its KPIs move by 0.000001 or 0.000002 on four (`ramping_average` 0.914382 to 0.914383, `monthly_one_minus_load_factor_average`, `discomfort_cold_delta_average` and `discomfort_cold_delta_maximum`); the cost check is not scored in these tables. Opus's replies to those 15 hours under numpy 1.26.4 were not asked for (no model calls), so they are not known.
+
+**Spend: $10.8659 ($10.865866) of the $25.00 hard stop**, cost check $0.956516 and month $9.909350. Per call in the month, Opus averaged 2,355 uncached input tokens, 2,144 cached and 174 output (cache hit rate 47.7 percent). Both runs replay every hour with 0 API calls (71 and 743), and every earlier recorded run on disk (37) still replays.
+
+Changes:
+
+- **Opus 5.5 in the model table** (`--model opus`): `claude-opus-5-5` at $4.00 per million input tokens, $5.00 for a 5 minute cache write, $0.20 for a cache read and $20.00 for output. Tests: the rates, and an Opus version 11 request equal to Sonnet's but for the model id, with and without caching.
+- **`.venv-charts`** for `scripts/make_ladder_chart.py` and `scripts/make_viewer_gif.py`, which need numpy 2, so the working environment keeps the package's numpy pin. Nothing else changes.
+- **Unchanged:** the envelope, the v9 strategy, every tuned number, every prompt version, and the published viewer, which stays on the 0.15.0 Haiku v9 run; only its footer's version, which `tests/test_viewer.py` keeps equal to the package version, now says 0.16.0. Nothing ran on the holdout.
+- **README.md:** the Opus blind row beside the tuning July ladder, its spend, and 0.16.0 in the pre-registered rules and the one-month limit. The chart is unchanged.
+
+Version 0.16.0 (`pyproject.toml`, `hyperbolic/__init__.py`, `docs/assets/version.js`, README.md badge).
 
 ## 0.15.2 (2026-11-11): record correction
 
