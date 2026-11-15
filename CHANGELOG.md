@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.0 (unreleased)
+
+Question: does the biggest model find the engineering on its own? Opus (`claude-opus-5-5`) in blind mode, prompt version 11 with no strategy given, on tuning July (`tuning-07`), the month of the 0.14.0 blind runs. Everything but the model is the 0.14.0 setup, from the Sonnet v11 and Haiku v11 manifests: prompt version 11, the same envelope, effort low, 2,000 max tokens, prompt caching on, all 743 hours. The dataset's seed is in its schema (`random_seed` 2023, the schema pinned by sha256), not in a run flag. The v9 strategy, the envelope and every tuned number are unchanged. Nothing runs on the holdout.
+
+**How the result is read, pre-registered, written before any code change or live call and not changed after.** The score is CityLearn's `cost_total` on tuning July at its six decimals, the KPI the post reports. The two ends are Sonnet blind (Sonnet v11, 0.14.0) at 0.945797 (5.4 percent saved) and v9 scripted at 0.919906 (8.0 percent saved), a gap of 0.025891. The share of the gap Opus closes is (0.945797 minus Opus's `cost_total`) / 0.025891.
+- **Found the engineering:** Opus closes at least 90 percent of the gap, that is, its `cost_total` is 0.922495 or lower (7.75 percent saved or more). A result below v9 scripted closes more than all of the gap and is in this reading.
+- **Partial:** better than Sonnet blind but under 90 percent of the gap, `cost_total` above 0.922495 and below 0.945797.
+- **No better than Sonnet:** `cost_total` at or above 0.945797, at or below Sonnet blind's saving.
+
+**Agreement with the v9 rules** is reported for Opus beside Sonnet v11 and Haiku v11, the same measure as 0.14.0: the share of building-hours where the model's action is within 0.002 (cooling) or 0.005 (tank and battery) of the v9 strategy's action for the same state (`shadow_strategy`, worked out in code every hour and never sent), per device and with all three at once, `null` counting as `baseline_action` on either side, an `end_trim` counting as a cooling disagreement, and unusable replies left out and counted separately. Agreement does not decide the reading.
+
+**Spend: a hard stop at $25.00 for this release, enforced in code.** First a cost check: the first 3 days (72 hours) of tuning July with prompt caching on. If the full month projected from it (its cost / 72 x 743) is over $22.00, the month does not run and no reading is given. Otherwise the month runs with its budget set to $25.00 minus what the cost check spent, so the two together cannot pass $25.00. The runner checks every call's worst case (the full request priced as uncached input, the cached prefix as a cache write, and the full 2,000 output tokens) against what is left before making it; once a call could pass the budget, no further call is made and every remaining hour keeps the baseline action. A month that reaches the stop is reported with its numbers as stopped by the budget, and no reading is given.
+
 ## 0.15.2 (2026-11-11): record correction
 
 This release corrects the record. No model calls, no simulator runs, and no change to any result, strategy, envelope, tuned number or recorded run. `results/`, `holdout/` and `hyperbolic/data` are untouched, and every recorded run replays as before.
